@@ -1,0 +1,209 @@
+# ============================================================
+# ITCHI Core Configuration
+# Integrated Tropical Cyclone Hazard Index v0.1
+# ============================================================
+
+project:
+  name: "itchi-core"
+  version: "0.1.0"
+  description: "Core computational workflow for ITCHI v0.1"
+
+
+# ============================================================
+# Spatial domain
+# ============================================================
+
+domain:
+  name: "mexico"
+  spatial_resolution_deg: 0.1
+
+  # Approximate domain for Mexico and surrounding tropical cyclone regions
+  lon_min: -135.0
+  lon_max: -65.0
+  lat_min: 5.0
+  lat_max: 35.0
+
+
+# ============================================================
+# Time configuration
+# ============================================================
+
+time:
+  # ITCHI will be evaluated at tropical-cyclone synoptic times
+  synoptic_hours_utc:
+    - 0
+    - 6
+    - 12
+    - 18
+
+  target_frequency_hours: 6
+
+  # Important:
+  # Precipitation is handled as snapshots, not temporal accumulations.
+  precipitation_time_handling: "snapshot"
+
+  # Temporal alignment between cyclone time and precipitation snapshot
+  temporal_alignment: "nearest"
+
+  # Maximum allowed difference between cyclone time and precipitation snapshot
+  max_time_tolerance_hours: 1.5
+
+
+# ============================================================
+# Precipitation configuration
+# ============================================================
+
+precipitation:
+  source: "mswep"
+
+  # Name expected inside precipitation files.
+  # This can be changed depending on the dataset.
+  variable_name: "precipitation"
+
+  # ITCHI v0.1 uses precipitation snapshots.
+  temporal_support: "snapshot"
+
+  # Units must be checked for each dataset.
+  # For downscaled products, the field should be comparable with the climatology.
+  units: "dataset_dependent"
+
+  percentiles:
+    low: 90
+    high: 95
+    maximum: 99
+
+  epsilon: 1.0e-6
+
+
+# ============================================================
+# Forecast and downscaling configuration
+# ============================================================
+
+forecast:
+  enabled: false
+
+  # Forecast products should be handled by valid_time.
+  use_valid_time: true
+
+  # These are only required when working with operational forecasts.
+  require_init_time: false
+  require_lead_time: false
+
+
+downscaling:
+  enabled: false
+
+  # Options can be defined later:
+  # external_product, quantile_mapping, statistical_model, neural_model
+  method: null
+
+  # Target grid for the downscaled precipitation product
+  target_grid: "mswep_0p1deg"
+
+  # Downscaling or bias correction must occur before precipitation hazard calculation.
+  apply_before_hazard_normalization: true
+
+  # The climatology should be statistically compatible with the precipitation product.
+  climatology_support: "same_as_precipitation_product"
+
+
+# ============================================================
+# Cyclone geometry
+# ============================================================
+
+geometry:
+  distance_units: "km"
+
+  # Main version uses quadrant-specific radii.
+  use_quadrant_radii: true
+
+  # Expected quadrant order
+  quadrant_convention:
+    - "RNE"
+    - "RSE"
+    - "RSW"
+    - "RNW"
+
+  # R34 defines the direct region.
+  direct_region_radius: "R34"
+
+  # ROCLOUD defines the external attribution limit.
+  outer_attribution_radius: "ROCLOUD"
+
+
+# ============================================================
+# Wind hazard
+# ============================================================
+
+wind:
+  enabled: true
+
+  # Wind hazard is active only inside R34.
+  active_region: "inside_r34"
+
+  # Tropical-storm-force wind threshold
+  reference_wind_kt: 34.0
+
+  # Preferred method for v0.1
+  method: "radial_profile"
+
+  clip_min: 0.0
+  clip_max: 1.0
+
+
+# ============================================================
+# ITCHI parameters
+# ============================================================
+
+itchi:
+  # Neutral weights for v0.1
+  alpha_wind: 1.0
+  beta_precip_direct: 1.0
+  lambda_direct: 1.0
+  mu_indirect: 1.0
+
+  clip_min: 0.0
+  clip_max: 1.0
+
+
+# ============================================================
+# Input paths
+# ============================================================
+
+paths:
+  tracks: "data/raw/tracks/"
+  rocloud: "data/raw/rocloud/"
+  wind: "data/raw/wind/"
+  precipitation: "data/raw/precipitation/"
+  climatology: "outputs/climatology/"
+
+
+# ============================================================
+# Output paths
+# ============================================================
+
+outputs:
+  itchi_gridded: "outputs/itchi_gridded/"
+  event_products: "outputs/event_products/"
+  diagnostics: "outputs/diagnostics/"
+  figures: "outputs/figures/"
+
+  # Preferred initial output format.
+  # Options can later include: netcdf, zarr, parquet.
+  format: "zarr"
+
+  overwrite: false
+
+
+# ============================================================
+# Quality control
+# ============================================================
+
+quality_control:
+  check_index_bounds: true
+  check_precipitation_bounds: true
+  check_wind_bounds: true
+  check_masks_are_exclusive: true
+  check_exterior_region_is_zero: true
+  check_r34_le_rocloud: true
+  check_required_variables: true
