@@ -1,0 +1,158 @@
+# ============================================================
+# Python
+# ============================================================
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+
+# ============================================================
+# Virtual environments
+# ============================================================
+
+.env
+.venv/
+venv/
+env/
+ENV/
+*.conda/
+
+
+# ============================================================
+# Jupyter notebooks
+# ============================================================
+
+.ipynb_checkpoints/
+
+
+# ============================================================
+# IDEs and editors
+# ============================================================
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+
+# ============================================================
+# Operating system files
+# ============================================================
+
+.DS_Store
+Thumbs.db
+
+
+# ============================================================
+# Logs
+# ============================================================
+
+*.log
+logs/
+
+
+# ============================================================
+# Local configuration files
+# ============================================================
+
+configs/local.yaml
+configs/paths.local.yaml
+*.secret.yaml
+*.secrets.yaml
+
+
+# ============================================================
+# Raw and intermediate data
+# ============================================================
+# Data folders are kept in the repository only through .gitkeep.
+# Actual data files should not be committed.
+
+data/raw/*
+data/interim/*
+data/processed/*
+data/external/*
+
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!data/external/.gitkeep
+
+
+# ============================================================
+# Outputs
+# ============================================================
+# Outputs are generated locally and should not be committed.
+
+outputs/climatology/*
+outputs/itchi_gridded/*
+outputs/event_products/*
+outputs/diagnostics/*
+outputs/figures/*
+
+!outputs/climatology/.gitkeep
+!outputs/itchi_gridded/.gitkeep
+!outputs/event_products/.gitkeep
+!outputs/diagnostics/.gitkeep
+!outputs/figures/.gitkeep
+
+
+# ============================================================
+# Scientific and geospatial data files
+# ============================================================
+
+*.nc
+*.nc4
+*.cdf
+*.zarr/
+*.grib
+*.grb
+*.grb2
+*.tif
+*.tiff
+*.vrt
+*.hdf
+*.h5
+*.he5
+
+*.parquet
+*.feather
+*.arrow
+
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.qpj
+*.geojson
+*.kml
+*.kmz
+
+
+# ============================================================
+# Compressed files
+# ============================================================
+
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+
+
+# ============================================================
+# Temporary files
+# ============================================================
+
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
