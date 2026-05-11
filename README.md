@@ -327,7 +327,9 @@ De forma preliminar, se usará un ambiente de Python con paquetes científicos y
 
 ## 15. Autoría
 
-Proyecto desarrollado como parte de una investigación doctoral sobre peligro asociado a ciclones tropicales.
+Adolfo Perez-Estrada 
+Universidad Nacional Autónoma de México (UNAM)
+Instituto de Ciencias de la Atmosfera y Cambio Climático
 
 ---
 
