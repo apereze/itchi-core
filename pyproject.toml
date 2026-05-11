@@ -1,0 +1,103 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "itchi-core"
+version = "0.1.0"
+description = "Core computational package for the Integrated Tropical Cyclone Hazard Index v0.1"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Adolfo" }
+]
+license = { text = "To be defined" }
+
+keywords = [
+    "tropical cyclones",
+    "hazard index",
+    "precipitation",
+    "wind hazard",
+    "geospatial analysis",
+    "climate risk"
+]
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Scientific/Engineering :: GIS"
+]
+
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "xarray",
+    "dask",
+    "netCDF4",
+    "h5netcdf",
+    "zarr",
+    "geopandas",
+    "shapely",
+    "pyproj",
+    "rasterio",
+    "cartopy",
+    "matplotlib",
+    "PyYAML",
+    "tqdm"
+]
+
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "ruff",
+    "pre-commit",
+    "jupyterlab",
+    "ipykernel"
+]
+
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["itchi*"]
+
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "B",
+    "UP"
+]
+ignore = []
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
