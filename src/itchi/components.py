@@ -206,8 +206,7 @@ def compute_direct_component(
     )
 
     direct_component = 1.0 - (
-        (1.0 - wind_hazard) ** alpha
-        * (1.0 - direct_precipitation_hazard) ** beta
+        (1.0 - wind_hazard) ** alpha * (1.0 - direct_precipitation_hazard) ** beta
     )
 
     return _clip_hazard(direct_component, clip_min, clip_max)

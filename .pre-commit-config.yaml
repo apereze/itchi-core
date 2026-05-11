@@ -1,0 +1,45 @@
+repos:
+  # ============================================================
+  # General file checks
+  # ============================================================
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^notebooks/
+      - id: end-of-file-fixer
+        exclude: ^notebooks/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=5000"]
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  # ============================================================
+  # Python import sorting
+  # ============================================================
+  - repo: https://github.com/pycqa/isort
+    rev: 6.0.1
+    hooks:
+      - id: isort
+        args: ["--profile", "black"]
+
+  # ============================================================
+  # Python formatting
+  # ============================================================
+  - repo: https://github.com/psf/black
+    rev: 25.1.0
+    hooks:
+      - id: black
+        language_version: python3.11
+
+  # ============================================================
+  # Python linting
+  # ============================================================
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.13
+    hooks:
+      - id: ruff
+        args: ["--fix"]

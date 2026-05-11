@@ -18,7 +18,6 @@ import xarray as xr
 
 from itchi.constants import QUADRANTS
 
-
 NAUTICAL_MILE_TO_KM: float = 1.852
 
 
@@ -41,7 +40,7 @@ def _contains_xarray_object(*objects: Any) -> bool:
     """
     Return True if at least one object is an xarray DataArray or Dataset.
     """
-    return any(isinstance(obj, (xr.DataArray, xr.Dataset)) for obj in objects)
+    return any(isinstance(obj, xr.DataArray | xr.Dataset) for obj in objects)
 
 
 def normalize_quadrant_key(key: str) -> str:

@@ -34,7 +34,7 @@ def _contains_xarray_object(*objects: Any) -> bool:
     """
     Return True if at least one object is an xarray DataArray or Dataset.
     """
-    return any(isinstance(obj, (xr.DataArray, xr.Dataset)) for obj in objects)
+    return any(isinstance(obj, xr.DataArray | xr.Dataset) for obj in objects)
 
 
 def _clip_index(
@@ -99,10 +99,7 @@ def compute_itchi(
     h_dir = _clip_index(direct_component, clip_min, clip_max)
     h_ind = _clip_index(indirect_component, clip_min, clip_max)
 
-    itchi = 1.0 - (
-        (1.0 - h_dir) ** lambda_direct
-        * (1.0 - h_ind) ** mu_indirect
-    )
+    itchi = 1.0 - ((1.0 - h_dir) ** lambda_direct * (1.0 - h_ind) ** mu_indirect)
 
     return _clip_index(itchi, clip_min, clip_max)
 

@@ -19,7 +19,6 @@ import xarray as xr
 
 from itchi.constants import QUADRANTS
 
-
 EARTH_RADIUS_KM: float = 6371.0088
 
 
@@ -30,7 +29,7 @@ def _contains_xarray_object(*objects: Any) -> bool:
     """
     Return True if at least one object is an xarray DataArray or Dataset.
     """
-    return any(isinstance(obj, (xr.DataArray, xr.Dataset)) for obj in objects)
+    return any(isinstance(obj, xr.DataArray | xr.Dataset) for obj in objects)
 
 
 def normalize_longitude_delta(
@@ -105,9 +104,7 @@ def compute_radial_distance_km(
 
     haversine_argument = (
         np.sin(lat_distance_rad / 2.0) ** 2
-        + np.cos(center_lat_rad)
-        * np.cos(lat_rad)
-        * np.sin(lon_distance_rad / 2.0) ** 2
+        + np.cos(center_lat_rad) * np.cos(lat_rad) * np.sin(lon_distance_rad / 2.0) ** 2
     )
 
     haversine_argument = _clip_unit_interval(haversine_argument)
@@ -211,8 +208,7 @@ def _validate_quadrant_radii(
         If any required quadrant is missing.
     """
     standardized = {
-        str(key).upper(): float(value)
-        for key, value in radii_by_quadrant.items()
+        str(key).upper(): float(value) for key, value in radii_by_quadrant.items()
     }
 
     required = set(QUADRANTS)

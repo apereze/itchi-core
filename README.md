@@ -334,4 +334,3 @@ Proyecto desarrollado como parte de una investigación doctoral sobre peligro as
 ## 16. Licencia
 
 Licencia por definir.
-
