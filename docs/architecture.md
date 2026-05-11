@@ -674,31 +674,3 @@ compute_itchi_snapshot_from_grid(
 Con ello, el cálculo dejaría de depender de un `radius_km` construido manualmente y se acercaría a la forma real de uso con datos de ciclones tropicales.
 
 ````
-
----
-
-# Paso 15.1 — Revisar el archivo
-
-Puedes verificar que se creó con:
-
-```bash
-ls docs
-````
-
-Deberías ver:
-
-```text
-architecture.md
-```
-
----
-
-# Paso 15.2 — Subirlo a GitHub
-
-```bash
-git add docs/architecture.md
-
-git commit -m "Add architecture documentation"
-
-git push
-```
