@@ -24,13 +24,13 @@ ITCHI v0.1 calcula un índice continuo en el intervalo:
 
 ```text
 0 ≤ ITCHI ≤ 1
-````
+```
 
 El índice integra tres fuentes físicas de peligro:
 
-1. precipitación directa dentro de `R34`;
-2. viento dentro de `R34`;
-3. precipitación indirecta entre `R34` y `ROCLOUD`.
+1. precipitación directa dentro de `R_direct`;
+2. viento dentro de `R_direct`;
+3. precipitación indirecta entre `R_direct` y `ROCLOUD`.
 
 La región exterior a `ROCLOUD` no contribuye al índice.
 
@@ -64,11 +64,9 @@ En la arquitectura actual del repositorio, la precipitación se maneja como:
 snapshot
 ```
 
-Esto significa que el campo de precipitación se toma como un estado o intensidad válida en un tiempo determinado.
+Esto significa que el campo de precipitación se toma como un estado o intensidad válida en un tiempo determinado. Por tanto, el núcleo del repositorio no debe asumir que la precipitación es acumulada.
 
-Por tanto, el núcleo del repositorio no debe asumir que la precipitación es acumulada.
-
-### 3.4. Radios
+### 3.4. Radios y nomenclatura
 
 Los radios se manejan por cuadrante usando la convención interna:
 
@@ -79,21 +77,26 @@ RSW = radio suroeste
 RNW = radio noroeste
 ```
 
+**Nomenclatura de radios:**
+
+- **`R34`**: radio de vientos de 34 nudos, tomado de IBTrACS o best-track.
+- **`R_direct`**: radio efectivo de región directa (puede ser `R34` o `RMW` según disponibilidad).
+- **`RMW`**: radio de máxima intensidad de viento (Radio of Maximum Wind).
+- **`ROCLOUD`**: radio externo de cobertura nubosa (región indirecta).
+
 ### 3.5. Unidades
 
-Todas las comparaciones geométricas se realizan en kilómetros.
-
-Por tanto:
+Todas las comparaciones geométricas se realizan en kilómetros:
 
 ```text
 radius_km
-R34_q
+R_direct_q
 ROCLOUD_q
 ```
 
 deben estar en kilómetros antes de construir máscaras.
 
-Si `R34` proviene de IBTrACS en millas náuticas, debe convertirse mediante:
+Si radios provienen de IBTrACS en millas náuticas, deben convertirse mediante:
 
 ```text
 1 nautical mile = 1.852 km
@@ -112,13 +115,19 @@ src/
     ├── constants.py
     ├── config.py
     ├── units.py
+    ├── radii.py
     ├── geometry.py
     ├── precipitation.py
     ├── masks.py
     ├── components.py
     ├── index.py
-    ├── pipeline.py
-    └── aggregation.py
+    ├── aggregation.py
+    ├── wind.py
+    ├── rocloud.py
+    ├── quality_control.py
+    ├── io.py
+    ├── tracks.py
+    └── pipeline.py
 ```
 
 ---
@@ -136,7 +145,8 @@ Responsabilidades:
 * percentiles principales;
 * horas sinópticas;
 * nombres oficiales de cuadrantes;
-* constantes numéricas básicas.
+* constantes numéricas básicas;
+* umbrales de intensidad.
 
 Ejemplos:
 
@@ -145,6 +155,7 @@ ITCHI_MIN_VALUE = 0.0
 ITCHI_MAX_VALUE = 1.0
 PRECIP_PERCENTILES = (90, 95, 99)
 QUADRANTS = ("RNE", "RSE", "RSW", "RNW")
+TROPICAL_DEPRESSION_THRESHOLD_KT = 34.0
 ```
 
 ---
@@ -158,7 +169,8 @@ Responsabilidades:
 * cargar `configs/default.yaml`;
 * validar que el archivo exista;
 * devolver la configuración como diccionario;
-* identificar la raíz del proyecto.
+* identificar la raíz del proyecto;
+* cargar configuración local opcional desde `configs/local.yaml`.
 
 Uso esperado:
 
@@ -172,13 +184,13 @@ cfg = load_default_config()
 
 ### 5.3. `units.py`
 
-Maneja conversiones de unidades.
+Maneja conversiones de unidades y normalización de cuadrantes.
 
 Responsabilidades:
 
 * convertir millas náuticas a kilómetros;
 * convertir kilómetros a millas náuticas;
-* normalizar nombres de cuadrantes;
+* normalizar nombres de cuadrantes (NE → RNE);
 * convertir radios por cuadrante a kilómetros.
 
 Uso esperado:
@@ -210,25 +222,67 @@ Salida esperada:
 
 ---
 
-### 5.4. `geometry.py`
+### 5.4. `radii.py`
+
+Resuelve radios por cuadrante y define el radio efectivo de región directa.
+
+Responsabilidades:
+
+* estandarizar radios por cuadrante;
+* rellenar cuadrantes faltantes con el promedio de valores disponibles;
+* distinguir entre `R34` observado y `R_direct` efectivo;
+* usar `RMW` como radio directo cuando no existe `R34` en depresiones tropicales;
+* conservar metadatos sobre imputación y fallback;
+* validar coherencia entre radios.
+
+Regla principal:
+
+```text
+Si R34 existe en todos o mayoría de cuadrantes:
+    R_direct_q = R34_q (rellenando faltantes con promedio)
+
+Si R34 es muy parcial y Vmax < 34 kt:
+    R_direct_q = RMW (si existe)
+
+Si no existe R34 ni RMW:
+    usar fallback_direct_radius_km (de configuración)
+```
+
+Uso esperado:
+
+```python
+from itchi.radii import resolve_direct_radius
+
+result = resolve_direct_radius(
+    r34_by_quadrant={"RNE": 60, "RSE": 50},
+    rmw_km=15.0,
+    vmax_kt=45.0,
+    fallback_km=40.0,
+)
+# result: {"RNE": 60, "RSE": 50, "RSW": 55, "RNW": 55}
+```
+
+---
+
+### 5.5. `geometry.py`
 
 Calcula geometría relativa al centro del ciclón.
 
 Responsabilidades:
 
 * calcular distancia radial celda-centro;
-* asignar cuadrante relativo;
+* asignar cuadrante relativo a cada celda;
 * asignar radios por cuadrante a cada celda;
 * construir campos geométricos base.
 
 Entradas típicas:
 
 ```text
-lon
-lat
+lon (malla)
+lat (malla)
 center_lon
 center_lat
-R34 por cuadrante
+R_direct por cuadrante
 ROCLOUD por cuadrante
 ```
 
@@ -237,7 +291,7 @@ Salidas típicas:
 ```text
 radius_km
 quadrant
-R34_q
+R_direct_q
 ROCLOUD_q
 ```
 
@@ -245,7 +299,7 @@ Este módulo permite pasar de información del ciclón por cuadrante a campos es
 
 ---
 
-### 5.5. `precipitation.py`
+### 5.6. `precipitation.py`
 
 Calcula el peligro normalizado por precipitación.
 
@@ -253,14 +307,15 @@ Responsabilidades:
 
 * recibir un campo de precipitación tipo snapshot;
 * recibir percentiles locales `Q90`, `Q95`, `Q99`;
-* calcular `H_P` en el intervalo `[0, 1]`.
+* calcular `H_P` en el intervalo `[0, 1]`;
+* manejar valores faltantes.
 
 La lógica por tramos es:
 
 ```text
 P < Q90        → H_P = 0
-Q90 ≤ P < Q95 → H_P aumenta de 0 a 0.5
-Q95 ≤ P < Q99 → H_P aumenta de 0.5 a 1
+Q90 ≤ P < Q95 → H_P = (P - Q90) / (Q95 - Q90) * 0.5
+Q95 ≤ P < Q99 → H_P = 0.5 + (P - Q95) / (Q99 - Q95) * 0.5
 P ≥ Q99       → H_P = 1
 ```
 
@@ -272,7 +327,7 @@ H_P
 
 ---
 
-### 5.6. `masks.py`
+### 5.7. `masks.py`
 
 Construye las regiones espaciales de ITCHI.
 
@@ -281,13 +336,14 @@ Responsabilidades:
 * construir máscara directa;
 * construir máscara indirecta;
 * construir máscara exterior;
-* garantizar separación espacial entre regiones.
+* garantizar separación espacial entre regiones;
+* validar no solapamiento.
 
 Definiciones:
 
 ```text
-M_direct   = r <= R34_q
-M_indirect = R34_q < r <= ROCLOUD_q
+M_direct   = r <= R_direct_q
+M_indirect = R_direct_q < r <= ROCLOUD_q
 M_exterior = r > ROCLOUD_q
 ```
 
@@ -301,7 +357,61 @@ M_exterior
 
 ---
 
-### 5.7. `components.py`
+### 5.8. `wind.py`
+
+Construye y normaliza el peligro por viento `V*`.
+
+Responsabilidades:
+
+* construir un perfil radial simple de viento a partir de `Vmax` y `RMW`;
+* normalizar viento en el intervalo `[0, 1]`;
+* manejar sistemas con `Vmax < 34 kt`;
+* permitir que el pipeline use `V*` precalculado o lo construya internamente;
+* aplicar máscara directa al campo de viento.
+
+Modos para sistemas bajo 34 kt:
+
+| Modo | Interpretación |
+|---|---|
+| `relative_to_vmax` | peligro relativo respecto a `Vmax` |
+| `zero` | peligro por viento igual a cero |
+| `disabled` | módulo deshabilitado, usar valores externos |
+
+Salida esperada:
+
+```text
+V* (normalizado en [0, 1])
+```
+
+---
+
+### 5.9. `rocloud.py`
+
+Lectura y limpieza de radios ROCLOUD.
+
+Responsabilidades:
+
+* estandarizar radios ROCLOUD por cuadrante;
+* rellenar cuadrantes faltantes con el promedio disponible;
+* validar que `ROCLOUD_q >= R_direct_q`;
+* aplicar fallbacks de configuración si es necesario;
+* conservar metadatos sobre fuente e imputación.
+
+Entrada típica:
+
+```python
+rocloud_by_quadrant = {"RNE": 250, "RSE": 220, ...}
+```
+
+Salida típica:
+
+```python
+{"RNE": 250, "RSE": 220, "RSW": 230, "RNW": 240}
+```
+
+---
+
+### 5.10. `components.py`
 
 Construye los componentes físicos previos al índice final.
 
@@ -321,11 +431,13 @@ H_Pind = M_indirect * H_P
 H_W    = M_direct * V*
 ```
 
-Componente directo:
+Componente directo (integración no-lineal):
 
 ```text
 H_dir = 1 - (1 - H_W)^alpha * (1 - H_Pdir)^beta
 ```
+
+Donde típicamente `alpha = 1.0` y `beta = 1.0`.
 
 Componente indirecto:
 
@@ -335,15 +447,16 @@ H_ind = H_Pind
 
 ---
 
-### 5.8. `index.py`
+### 5.11. `index.py`
 
 Calcula el índice final ITCHI.
 
 Responsabilidades:
 
-* integrar `H_dir` y `H_ind`;
+* integrar `H_dir` e `H_ind`;
 * mantener el índice acotado en `[0, 1]`;
-* permitir pesos de sensibilidad `lambda_direct` y `mu_indirect`.
+* permitir pesos de sensibilidad `lambda_direct` y `mu_indirect`;
+* aplicar clipping final si es necesario.
 
 Fórmula general:
 
@@ -354,45 +467,23 @@ ITCHI = 1 - (1 - H_dir)^lambda_direct * (1 - H_ind)^mu_indirect
 Para la versión base:
 
 ```text
-lambda_direct = 1
-mu_indirect = 1
+lambda_direct = 1.0
+mu_indirect = 1.0
 ```
 
 ---
 
-### 5.9. `pipeline.py`
-
-Integra los módulos anteriores en una función de cálculo.
-
-Responsabilidades actuales:
-
-* recibir precipitación;
-* recibir percentiles;
-* recibir distancia radial;
-* recibir radios;
-* recibir viento normalizado;
-* calcular máscaras;
-* calcular componentes;
-* calcular ITCHI.
-
-Función actual principal:
-
-```python
-compute_itchi_snapshot(...)
-```
-
-Esta función representa una primera integración para un snapshot ciclónico.
-
-### 5.10. `aggregation.py`
+### 5.12. `aggregation.py`
 
 Construye productos derivados por evento a partir de varios snapshots temporales de ITCHI.
 
 Responsabilidades:
 
-- calcular el máximo temporal de ITCHI por celda;
-- calcular el acumulado acotado de ITCHI por celda;
-- preservar dimensiones y coordenadas cuando se usa `xarray`;
-- mantener los productos derivados dentro del intervalo `[0, 1]`.
+* calcular el máximo temporal de ITCHI por celda;
+* calcular el acumulado acotado de ITCHI por celda;
+* preservar dimensiones y coordenadas cuando se usa `xarray`;
+* mantener los productos derivados dentro del intervalo `[0, 1]`;
+* manejar valores faltantes o incompletos.
 
 Productos principales:
 
@@ -401,9 +492,10 @@ ITCHI_max = max(ITCHI_t)
 
 ITCHI_acc = 1 - product(1 - ITCHI_t)
 ```
----
+
 Uso esperado:
-```bash
+
+```python
 from itchi.aggregation import compute_event_products
 
 products = compute_event_products(
@@ -414,17 +506,159 @@ products = compute_event_products(
 
 Salidas esperadas:
 
+```python
 products["ITCHI_max"]
 products["ITCHI_acc"]
+```
 
 Este módulo permite pasar del producto espacio-temporal base:
 
+```text
 ITCHI_g,h,t
+```
 
 a productos resumidos por evento:
 
+```text
 ITCHI_max_g,h
 ITCHI_acc_g,h
+```
+
+---
+
+### 5.13. `quality_control.py`
+
+Validaciones físicas y computacionales de resultados intermedios y finales.
+
+Responsabilidades:
+
+* validar rangos de variables (H_P, H_W, H_dir, H_ind, ITCHI en [0, 1]);
+* verificar coherencia de radios (R_direct_q <= ROCLOUD_q);
+* validar no solapamiento de máscaras;
+* verificar que región exterior no contribuye;
+* detectar y reportar valores anómalos;
+* preservar dimensiones y coordenadas en `xarray`;
+* generar reportes de validación detallados.
+
+Salida típica:
+
+```python
+validation_result = {
+    "valid": True,
+    "errors": [],
+    "warnings": ["valor de H_P superior a 1 en 5 celdas"],
+    "statistics": {...}
+}
+```
+
+---
+
+### 5.14. `io.py`
+
+Lectura y escritura de archivos.
+
+Responsabilidades:
+
+* leer archivos NetCDF, Zarr, HDF5;
+* escribir productos en NetCDF, Zarr o Parquet;
+* preservar metadatos (atributos, dimensiones);
+* manejar compresión y chunking;
+* validar formato antes de lectura/escritura.
+
+Formatos soportados:
+
+```text
+Lectura: NetCDF, Zarr, HDF5, CSV
+Escritura: NetCDF, Zarr, Parquet
+```
+
+---
+
+### 5.15. `tracks.py`
+
+Lectura y estandarización de trayectorias ciclónicas.
+
+Responsabilidades:
+
+* leer trayectorias desde IBTrACS, best-track local o CSV;
+* estandarizar estructura de datos;
+* extraer información por timestamp: centro, intensidad, radios;
+* validar continuidad y coherencia temporal;
+* interpolar posiciones si es necesario.
+
+Entrada típica:
+
+```python
+track = read_track("path/to/ibtracs_file.nc", storm_id="2024001N")
+```
+
+Salida típica:
+
+```python
+{
+    "time": [...],
+    "center_lon": [...],
+    "center_lat": [...],
+    "vmax_kt": [...],
+    "rmw_km": [...],
+    "r34_ne": [...],
+    ...
+}
+```
+
+---
+
+### 5.16. `pipeline.py`
+
+Integra los módulos anteriores en funciones de cálculo coherentes.
+
+Responsabilidades:
+
+* orquestar el flujo de cálculo;
+* recibir inputs geográficos, ciclónicos y meteo;
+* invocar módulos en orden correcto;
+* aplicar validaciones intermedias;
+* retornar productos estructurados;
+* soportar tanto numpy como xarray.
+
+Función principal:
+
+```python
+compute_itchi_snapshot(
+    lon,
+    lat,
+    center_lon,
+    center_lat,
+    precipitation,
+    percentiles,
+    r34_by_quadrant=None,
+    rmw_km=None,
+    rocloud_by_quadrant=None,
+    vmax_kt=None,
+    wind_mode="relative_to_vmax",
+    return_components=True,
+    validate=True,
+)
+```
+
+Retorna diccionario con:
+
+```python
+{
+    "ITCHI": ...,
+    "H_P": ...,
+    "H_W": ...,
+    "H_Pdir": ...,
+    "H_Pind": ...,
+    "H_dir": ...,
+    "H_ind": ...,
+    "M_direct": ...,
+    "M_indirect": ...,
+    "M_exterior": ...,
+    "metadata": {...}
+}
+```
+
 ---
 
 ## 6. Flujo computacional actual
@@ -432,151 +666,112 @@ ITCHI_acc_g,h
 El flujo actual del repositorio es:
 
 ```text
-Precipitación snapshot
+Track del ciclón
+    (center_lon, center_lat, vmax_kt, rmw_km, R34)
         ↓
-Percentiles Q90/Q95/Q99
+ROCLOUD por cuadrante
         ↓
-H_P
+radii.py: Resolución de R_direct
         ↓
-Distancia radial + radios R34/ROCLOUD
+R_direct_q, ROCLOUD_q (km)
         ↓
-Máscaras directa, indirecta y exterior
+geometry.py: Construcción de campos
         ↓
-H_Pdir, H_Pind, H_W
+radius_km, quadrant, R_direct_q, ROCLOUD_q
         ↓
-H_dir, H_ind
+Precipitación snapshot + Q90/Q95/Q99
+        ↓
+precipitation.py: Cálculo de H_P
+        ↓
+wind.py: Construcción de V*
+        ↓
+masks.py: Construcción de máscaras
+        ↓
+M_direct, M_indirect, M_exterior
+        ↓
+components.py: Cálculo de H_Pdir, H_Pind, H_W, H_dir, H_ind
+        ↓
+index.py: Cálculo de ITCHI
         ↓
 ITCHI_g,h,t
         ↓
-Agregación temporal por evento
+quality_control.py: Validación
+        ↓
+aggregation.py: Agregación temporal por evento
         ↓
 ITCHI_max_g,h, ITCHI_acc_g,h
 ```
 
 ---
 
-## 7. Diagrama de flujo
+## 7. Diagrama de flujo mejorado
 
 ```mermaid
 flowchart TD
 
-    A[Precipitación snapshot] --> B[Normalización con Q90 Q95 Q99]
-    B --> C[H_P]
+    TRK["Track: center_lon, center_lat<br/>vmax_kt, rmw_km, R34"]
+    TRK --> RD["radii.py<br/>Resolver R_direct"]
 
-    D[Centro del ciclón] --> E[geometry.py]
-    F[Malla lat lon] --> E
-    E --> G[radius_km]
-    E --> H[quadrant]
+    PC["Precipitación<br/>snapshot"]
+    PERC["Percentiles<br/>Q90/Q95/Q99"]
+    PC --> PRECIP["precipitation.py<br/>H_P"]
+    PERC --> PRECIP
 
-    I[R34 por cuadrante] --> J[Asignar R34_q]
-    K[ROCLOUD por cuadrante] --> L[Asignar ROCLOUD_q]
-    H --> J
-    H --> L
+    ROC["ROCLOUD<br/>por cuadrante"]
+    ROC --> RD
 
-    G --> M[masks.py]
-    J --> M
-    L --> M
+    RD --> GEO["geometry.py<br/>radius_km, quadrant"]
+    MALLA["Malla<br/>lon, lat"]
+    MALLA --> GEO
 
-    M --> N[M_direct]
-    M --> O[M_indirect]
-    M --> P[M_exterior]
+    GEO --> M["masks.py<br/>M_direct, M_indirect"]
+    RD --> M
 
-    C --> Q[components.py]
-    N --> Q
-    O --> Q
-    R[Viento normalizado V*] --> Q
+    VMAX["vmax_kt, rmw_km"]
+    VMAX --> W["wind.py<br/>V*"]
+    W --> C["components.py"]
 
-    Q --> S[H_Pdir]
-    Q --> T[H_Pind]
-    Q --> U[H_W]
-    Q --> V[H_dir]
-    Q --> W[H_ind]
+    PRECIP --> C
+    M --> C
 
-    V --> X[index.py]
-    W --> X
-
-    X --> Y[ITCHI]
+    C --> HDIR["H_dir, H_ind<br/>H_Pdir, H_Pind, H_W"]
+    HDIR --> IDX["index.py<br/>ITCHI"]
+    IDX --> QC["quality_control.py<br/>Validación"]
+    QC --> AGG["aggregation.py<br/>ITCHI_max, ITCHI_acc"]
+    
+    AGG --> OUT["Productos finales<br/>por evento"]
 ```
 
 ---
 
-## 8. Flujo esperado con geometría integrada
+## 8. Flujo operativo actual
 
-El siguiente objetivo del repositorio es actualizar `pipeline.py` para que no reciba directamente:
-
-```text
-radius_km
-r34_km
-rocloud_km
-```
-
-sino que pueda recibir:
+Con los módulos implementados, el flujo operativo es:
 
 ```text
-lon
-lat
-center_lon
-center_lat
-r34_by_quadrant
-rocloud_by_quadrant
-```
-
-y calcular internamente:
-
-```text
-radius_km
-quadrant
-R34_q
-ROCLOUD_q
-```
-
-El flujo esperado será:
-
-```text
-lon, lat, center_lon, center_lat
-        ↓
-geometry.py
-        ↓
-radius_km, quadrant
-        ↓
-assign_quadrant_radius
-        ↓
-R34_q, ROCLOUD_q
-        ↓
-masks.py
-        ↓
-compute_itchi_snapshot
+1. Leer configuración (config.py)
+2. Leer track de un ciclón (tracks.py)
+3. Leer precipitación snapshot (io.py)
+4. Leer percentiles Q90/Q95/Q99 (climatología)
+5. Leer o construir ROCLOUD (rocloud.py)
+6. Resolver R_direct (radii.py)
+7. Construir geometría ciclónica (geometry.py)
+8. Calcular H_P (precipitation.py)
+9. Construir V* (wind.py)
+10. Construir máscaras (masks.py)
+11. Calcular H_Pdir, H_Pind, H_W (components.py)
+12. Calcular H_dir, H_ind (components.py)
+13. Calcular ITCHI (index.py)
+14. Validar (quality_control.py)
+15. Guardar producto ITCHI por snapshot (io.py)
+16. Agregar por evento (aggregation.py)
 ```
 
 ---
 
-## 9. Flujo operativo futuro
+## 9. Productos esperados
 
-Después de integrar geometría en el pipeline, el flujo completo del repositorio deberá crecer hacia:
-
-```text
-1. Leer configuración.
-2. Leer track de un ciclón.
-3. Leer precipitación snapshot.
-4. Leer percentiles Q90/Q95/Q99.
-5. Leer R34 por cuadrante.
-6. Convertir R34 de millas náuticas a km.
-7. Leer ROCLOUD por cuadrante.
-8. Construir geometría ciclónica.
-9. Construir máscaras.
-10. Calcular H_P.
-11. Calcular H_Pdir, H_Pind, H_W.
-12. Calcular H_dir, H_ind.
-13. Calcular ITCHI.
-14. Guardar producto ITCHI por snapshot.
-15. Agregar por evento.
-```
-
----
-
-## 10. Productos esperados
-
-### 10.1. Producto por snapshot
+### 9.1. Producto por snapshot
 
 Producto base:
 
@@ -606,11 +801,23 @@ H_ind
 M_direct
 M_indirect
 M_exterior
+V*
+```
+
+Atributos recomendados:
+
+```text
+storm_id
+storm_name
+vmax_kt (velocidad máxima)
+rmw_km (radio de máxima intensidad)
+center_lon / center_lat
+source (IBTrACS, best-track, etc)
 ```
 
 ---
 
-### 10.2. Producto por evento
+### 9.2. Producto por evento
 
 A partir de todos los snapshots de un ciclón se espera calcular:
 
@@ -623,17 +830,24 @@ Donde:
 
 ```text
 ITCHI_max = máximo temporal de ITCHI por celda
+
+ITCHI_acc = 1 - product(1 - ITCHI_t)
 ```
 
-y:
+Metadatos por evento:
 
 ```text
-ITCHI_acc = 1 - product(1 - ITCHI_t)
+storm_id
+storm_name
+start_time
+end_time
+n_snapshots
+vmax_observed
 ```
 
 ---
 
-## 11. Pruebas implementadas
+## 10. Pruebas implementadas
 
 El repositorio incluye pruebas unitarias para validar:
 
@@ -647,36 +861,80 @@ El repositorio incluye pruebas unitarias para validar:
 | `tests/test_geometry.py` | Distancia radial y cuadrantes |
 | `tests/test_units.py` | Conversión de unidades |
 | `tests/test_aggregation.py` | Productos derivados por evento |
+| `tests/test_radii.py` | Resolución de radios directos |
+| `tests/test_wind.py` | Construcción y normalización de viento |
+| `tests/test_rocloud.py` | Resolución de ROCLOUD |
+| `tests/test_quality_control.py` | Validaciones de calidad |
+| `tests/test_tracks.py` | Lectura de trayectorias |
+| `tests/test_io.py` | Lectura y escritura de archivos |
 
 ---
 
-## 12. Reglas de consistencia
+## 11. Reglas de consistencia
 
 La implementación debe verificar como mínimo:
 
 1. `ITCHI` debe permanecer en `[0, 1]`.
-2. `H_P`, `H_W`, `H_dir` y `H_ind` deben permanecer en `[0, 1]`.
-3. La región exterior no debe contribuir al índice.
-4. Las máscaras directa, indirecta y exterior no deben solaparse.
-5. `R34_q` y `ROCLOUD_q` deben estar en kilómetros.
-6. Los cuadrantes deben usar la convención interna `RNE`, `RSE`, `RSW`, `RNW`.
-7. La precipitación debe ser comparable con la climatología usada para calcular `Q90`, `Q95` y `Q99`.
-8. El pipeline debe preservar dimensiones y coordenadas cuando se usen objetos `xarray`.
+2. `H_P`, `H_W`, `H_dir`, `H_ind`, `V*` deben permanecer en `[0, 1]`.
+3. `H_Pdir` y `H_Pind` son productos de máscara con otro campo, así que también en `[0, 1]`.
+4. La región exterior no debe contribuir al índice (máscara exterior = 0).
+5. Las máscaras directa, indirecta y exterior no deben solaparse.
+6. `R_direct_q` y `ROCLOUD_q` deben estar en kilómetros.
+7. `R_direct_q <= ROCLOUD_q` siempre.
+8. Los cuadrantes deben usar la convención interna `RNE`, `RSE`, `RSW`, `RNW`.
+9. La precipitación debe ser comparable con la climatología usada para calcular `Q90`, `Q95` y `Q99`.
+10. El pipeline debe preservar dimensiones y coordenadas cuando se usen objetos `xarray`.
+11. Los radios rellenados (imputación) deben documentarse en metadatos.
+12. Valores faltantes deben propagarse coherentemente.
 
 ---
 
-## 13. Módulos pendientes
+## 12. Módulos pendientes
 
-Los siguientes módulos todavía deben desarrollarse:
+Los siguientes módulos se consideran para desarrollo futuro:
 
-| Módulo | Propósito |
-|---|---|
-| `tracks.py` | Lectura y estandarización de trayectorias |
-| `rocloud.py` | Lectura y limpieza de radios ROCLOUD |
-| `wind.py` | Perfil radial de viento o normalización de viento |
-| `io.py` | Lectura y escritura de archivos |
-| `compiler.py` | Corrida de múltiples snapshots o ciclones |
-| `quality_control.py` | Validaciones físicas y computacionales |
+| Módulo | Propósito | Estado |
+|---|---|---|
+| `compiler.py` | Orquestación de múltiples snapshots y ciclones | Planeado |
+| `precipitation_snapshots.py` | Alineación temporal de precipitación | Opcional |
+| `climatology.py` | Manejo formal de percentiles Q90, Q95, Q99 | Futuro |
+
+---
+
+## 13. Decisiones arquitectónicas
+
+### 13.1. Radio de región directa
+
+Se distingue explícitamente:
+
+- **`R34`**: radio observado de 34 nudos (puede ser parcial o ausente).
+- **`R_direct`**: radio efectivo para cálculos (R34 completado o RMW como fallback).
+
+Esta separación permite mayor flexibilidad en depresiones tropicales y sistemas débiles.
+
+### 13.2. Normalización de viento
+
+El viento normalizado `V*` se construye internamente usando:
+
+- Perfil radial simple función de `Vmax` y `RMW`.
+- Normalización lineal respecto a `Vmax`.
+- Modo configurable para sistemas sub-34 kt.
+
+### 13.3. Validación temprana
+
+El módulo `quality_control.py` se ejecuta después de cada componente crítico, permitiendo:
+
+- Detección temprana de errores.
+- Generación de reportes detallados.
+- Trazabilidad del cálculo.
+
+### 13.4. Preservación de coordenadas
+
+Cuando se usa `xarray`:
+
+- Las dimensiones originales se preservan.
+- Se añaden atributos de traza (storm_id, time, etc).
+- Metadatos de imputación se registran explícitamente.
 
 ---
 
@@ -684,37 +942,41 @@ Los siguientes módulos todavía deben desarrollarse:
 
 Estas decisiones se documentan como pendientes:
 
-1. Formato principal de salida: NetCDF, Zarr o Parquet.
-2. Forma inicial de representar el viento si no hay perfil radial completo.
-3. Convención definitiva para nombres de variables de entrada.
-4. Estructura final de `storm_id`.
-5. Manejo de snapshots faltantes de precipitación.
-6. Manejo de radios faltantes o incompletos.
-7. Definición de rutas locales mediante `configs/local.yaml`.
+1. Formato principal de salida: NetCDF, Zarr o Parquet (pendiente).
+2. Convención definitiva para nombres de variables de entrada (en progreso).
+3. Manejo de snapshots faltantes de precipitación.
+4. Definición de rutas locales mediante `configs/local.yaml` (parcialmente implementada).
+5. Compresión y chunking en escritura de archivos grandes.
+6. Interpolación temporal de posiciones en tracks con gaps.
+7. Criterios para activar/desactivar validaciones en producción.
 
 ---
 
-## 15. Siguiente paso técnico
+## 15. Próximos pasos recomendados
 
-El siguiente paso recomendado es construir `quality_control.py`.
+### Corto plazo
 
-Este módulo deberá validar de forma explícita:
+1. Completar cobertura de pruebas (target: > 90%).
+2. Documentar funciones con docstrings tipo NumPy.
+3. Crear ejemplos de uso en notebooks.
 
-1. que `ITCHI` permanezca dentro de `[0, 1]`;
-2. que `H_P`, `H_W`, `H_dir` y `H_ind` permanezcan dentro de `[0, 1]`;
-3. que `R34_q <= ROCLOUD_q` cuando ambos radios existan;
-4. que la región exterior tenga contribución nula;
-5. que las máscaras directa, indirecta y exterior no se solapen;
-6. que los campos principales preserven dimensiones y coordenadas;
-7. que las unidades geométricas estén en kilómetros antes de construir máscaras.
+### Mediano plazo
 
-Después de `quality_control.py`, los siguientes módulos recomendados serán:
+1. Implementar `compiler.py` para múltiples snapshots/ciclones.
+2. Optimizar desempeño en mallas grandes.
+3. Validar con datos reales de ciclones históricos.
 
-```text
-io.py
-tracks.py
-rocloud.py
-wind.py
-compiler.py
+### Largo plazo
 
-````
+1. Dashboard operativo.
+2. Integración con sistemas de pronóstico.
+3. Calibración estadística con declaratorias.
+
+---
+
+## 16. Referencias y estándares
+
+- **IBTrACS**: International Best Track Archive for Climate Stewardship. https://www.ncei.noaa.gov/products/international-best-track-archive
+- **NetCDF**: Climate and Forecast (CF) Conventions. http://cfconventions.org/
+- **Xarray**: N-dimensional labeled arrays and datasets. https://xarray.pydata.org/
+- **NumPy**: Array computing with Python. https://numpy.org/
