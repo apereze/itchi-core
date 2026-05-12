@@ -36,6 +36,7 @@ from itchi.precipitation import compute_precipitation_hazard
 from itchi.quality_control import run_snapshot_quality_control
 from itchi.radii import resolve_attribution_radius, resolve_direct_radius
 from itchi.units import convert_quadrant_radii_to_km
+from itchi.wind import compute_wind_hazard_from_profile
 
 ArrayLike = np.ndarray | xr.DataArray
 
@@ -155,13 +156,17 @@ def compute_itchi_snapshot_from_grid(
     center_lat: float,
     r34_by_quadrant: Mapping[str, float | int | None],
     rocloud_by_quadrant: Mapping[str, float | int | None],
-    wind_hazard_normalized: ArrayLike,
+    wind_hazard_normalized: ArrayLike | None = None,
     r34_unit: str = "nm",
     rocloud_unit: str = "km",
     vmax_kt: float | None = None,
     rmw_km: float | None = None,
     fallback_direct_radius_km: float | None = None,
     radius_fill_strategy: str = "mean_available",
+    wind_below_threshold_mode: str = "relative_to_vmax",
+    wind_inner_exponent: float = 1.0,
+    wind_outer_decay_exponent: float = 0.5,
+    wind_outer_radius_km: float | None = None,
     alpha_wind: float = 1.0,
     beta_precip_direct: float = 1.0,
     lambda_direct: float = 1.0,
@@ -180,7 +185,8 @@ def compute_itchi_snapshot_from_grid(
     4. Compute radial distance from each grid cell to the cyclone center.
     5. Compute the relative quadrant of each grid cell.
     6. Assign quadrant-specific R_direct_q and ROCLOUD_q to each grid cell.
-    7. Compute precipitation hazard, masks, components and final ITCHI.
+    7. Use or compute normalized wind hazard V*.
+    8. Compute precipitation hazard, masks, components and final ITCHI.
 
     Parameters
     ----------
@@ -206,22 +212,31 @@ def compute_itchi_snapshot_from_grid(
     rocloud_by_quadrant : Mapping[str, float, int or None]
         ROCLOUD radii by quadrant. Accepted keys are RNE, RSE, RSW, RNW
         or aliases NE, SE, SW, NW. These may be partially missing.
-    wind_hazard_normalized : numpy.ndarray or xarray.DataArray
-        Normalized wind hazard field V* in [0, 1].
+    wind_hazard_normalized : numpy.ndarray, xarray.DataArray or None, default=None
+        Precomputed normalized wind hazard field V* in [0, 1].
+        If None, it is computed from vmax_kt, rmw_km and radius_km.
     r34_unit : str, default="nm"
         Unit of R34 radii. IBTrACS commonly reports wind radii in nautical miles.
     rocloud_unit : str, default="km"
         Unit of ROCLOUD radii.
     vmax_kt : float or None, default=None
-        Maximum sustained wind in knots. Used to identify tropical depressions
-        when R34 is unavailable.
+        Maximum sustained wind in knots. Used both for direct-radius fallback
+        and wind-hazard profile computation.
     rmw_km : float or None, default=None
-        Radius of maximum wind in kilometers. Used as fallback direct radius
-        for tropical depressions without R34.
+        Radius of maximum wind in kilometers. Used both as a possible direct
+        radius fallback and for wind-hazard profile computation.
     fallback_direct_radius_km : float or None, default=None
         Optional configured fallback radius in kilometers.
     radius_fill_strategy : str, default="mean_available"
         Strategy used to fill missing R34 or ROCLOUD quadrants.
+    wind_below_threshold_mode : {"relative_to_vmax", "zero"}, default="relative_to_vmax"
+        Normalization rule when vmax_kt <= 34 kt.
+    wind_inner_exponent : float, default=1.0
+        Inner radial wind profile exponent.
+    wind_outer_decay_exponent : float, default=0.5
+        Outer radial wind decay exponent.
+    wind_outer_radius_km : float or None, default=None
+        Optional radius beyond which parametric wind is set to zero.
     alpha_wind : float, default=1.0
         Weight/exponent for wind hazard in the direct component.
     beta_precip_direct : float, default=1.0
@@ -237,7 +252,7 @@ def compute_itchi_snapshot_from_grid(
     -------
     dict[str, Any]
         Dictionary containing geometry fields, masks, intermediate components,
-        radius-resolution metadata and final ITCHI.
+        radius-resolution metadata, wind metadata and final ITCHI.
     """
     r34_km_by_quadrant = convert_quadrant_radii_to_km(
         radii_by_quadrant=r34_by_quadrant,
@@ -282,6 +297,30 @@ def compute_itchi_snapshot_from_grid(
         radii_by_quadrant=resolved_rocloud_radius.radii,
     )
 
+    if wind_hazard_normalized is None:
+        if vmax_kt is None or rmw_km is None:
+            raise ValueError(
+                "wind_hazard_normalized was not provided. "
+                "To compute wind hazard internally, both vmax_kt and rmw_km "
+                "must be provided."
+            )
+
+        wind_hazard_for_pipeline = compute_wind_hazard_from_profile(
+            radius_km=radius_km,
+            vmax_kt=float(vmax_kt),
+            rmw_km=float(rmw_km),
+            below_threshold_mode=wind_below_threshold_mode,
+            inner_exponent=wind_inner_exponent,
+            outer_decay_exponent=wind_outer_decay_exponent,
+            outer_radius_km=wind_outer_radius_km,
+        )
+
+        wind_hazard_source = "radial_profile"
+
+    else:
+        wind_hazard_for_pipeline = wind_hazard_normalized
+        wind_hazard_source = "provided"
+
     result = compute_itchi_snapshot(
         precipitation=precipitation,
         q90=q90,
@@ -290,7 +329,7 @@ def compute_itchi_snapshot_from_grid(
         radius_km=radius_km,
         r34_km=direct_radius_q,
         rocloud_km=rocloud_q,
-        wind_hazard_normalized=wind_hazard_normalized,
+        wind_hazard_normalized=wind_hazard_for_pipeline,
         alpha_wind=alpha_wind,
         beta_precip_direct=beta_precip_direct,
         lambda_direct=lambda_direct,
@@ -308,6 +347,7 @@ def compute_itchi_snapshot_from_grid(
         "R_direct_used_fallback": resolved_direct_radius.used_fallback,
         "ROCLOUD_source": resolved_rocloud_radius.source,
         "ROCLOUD_filled_quadrants": resolved_rocloud_radius.filled_quadrants,
+        "wind_hazard_source": wind_hazard_source,
         **result,
     }
 

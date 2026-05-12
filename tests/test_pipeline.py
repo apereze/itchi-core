@@ -5,6 +5,7 @@ Tests for the high-level ITCHI snapshot pipeline.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import xarray as xr
 
 from itchi.pipeline import compute_itchi_snapshot, compute_itchi_snapshot_from_grid
@@ -201,6 +202,7 @@ def test_compute_itchi_snapshot_from_grid_returns_geometry_fields() -> None:
         "R_direct_used_fallback",
         "ROCLOUD_source",
         "ROCLOUD_filled_quadrants",
+        "wind_hazard_source",
         "M_direct",
         "M_indirect",
         "M_exterior",
@@ -358,6 +360,7 @@ def test_compute_itchi_snapshot_from_grid_preserves_xarray_dimensions() -> None:
     assert isinstance(result["R_direct_used_fallback"], bool)
     assert isinstance(result["ROCLOUD_source"], str)
     assert isinstance(result["ROCLOUD_filled_quadrants"], tuple)
+    assert isinstance(result["wind_hazard_source"], str)
 
     assert float(result["ITCHI"].min()) >= 0.0
     assert float(result["ITCHI"].max()) <= 1.0
@@ -515,3 +518,87 @@ def test_compute_itchi_snapshot_from_grid_uses_rmw_for_tropical_depression() -> 
     assert result["R_direct_used_fallback"] is True
     assert result["R_direct_filled_quadrants"] == ("RNE", "RSE", "RSW", "RNW")
     assert "ITCHI" in result
+
+
+def test_compute_itchi_snapshot_from_grid_computes_wind_from_profile() -> None:
+    """
+    Test that wind hazard can be computed internally from Vmax and RMW.
+    """
+    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
+    lon = np.array([0.0, 0.1, 0.3, 1.5])
+    lat = np.zeros_like(lon)
+
+    result = compute_itchi_snapshot_from_grid(
+        precipitation=precipitation,
+        q90=10.0,
+        q95=20.0,
+        q99=30.0,
+        lon=lon,
+        lat=lat,
+        center_lon=0.0,
+        center_lat=0.0,
+        r34_by_quadrant={
+            "RNE": 40.0,
+            "RSE": 40.0,
+            "RSW": 40.0,
+            "RNW": 40.0,
+        },
+        r34_unit="nm",
+        rocloud_by_quadrant={
+            "RNE": 130.0,
+            "RSE": 130.0,
+            "RSW": 130.0,
+            "RNW": 130.0,
+        },
+        rocloud_unit="km",
+        vmax_kt=80.0,
+        rmw_km=20.0,
+        wind_hazard_normalized=None,
+        run_quality_control=True,
+    )
+
+    assert result["wind_hazard_source"] == "radial_profile"
+    assert "H_W" in result
+    assert "ITCHI" in result
+    assert np.nanmin(result["H_W"]) >= 0.0
+    assert np.nanmax(result["H_W"]) <= 1.0
+    assert np.nanmin(result["ITCHI"]) >= 0.0
+    assert np.nanmax(result["ITCHI"]) <= 1.0
+
+
+def test_compute_itchi_snapshot_from_grid_requires_wind_inputs() -> None:
+    """
+    Test that wind inputs are required when wind_hazard_normalized is missing.
+    """
+    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
+    lon = np.array([0.0, 0.1, 0.3, 1.5])
+    lat = np.zeros_like(lon)
+
+    with pytest.raises(ValueError):
+        compute_itchi_snapshot_from_grid(
+            precipitation=precipitation,
+            q90=10.0,
+            q95=20.0,
+            q99=30.0,
+            lon=lon,
+            lat=lat,
+            center_lon=0.0,
+            center_lat=0.0,
+            r34_by_quadrant={
+                "RNE": 40.0,
+                "RSE": 40.0,
+                "RSW": 40.0,
+                "RNW": 40.0,
+            },
+            r34_unit="nm",
+            rocloud_by_quadrant={
+                "RNE": 130.0,
+                "RSE": 130.0,
+                "RSW": 130.0,
+                "RNW": 130.0,
+            },
+            rocloud_unit="km",
+            wind_hazard_normalized=None,
+            vmax_kt=None,
+            rmw_km=None,
+        )
