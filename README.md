@@ -651,7 +651,7 @@ Para más detalles sobre licencias de software científico, ver [choosealicense.
 
 - **IBTrACS**: [International Best Track Archive for Climate Stewardship](https://www.ncei.noaa.gov/products/international-best-track-archive)
 - **MSWEP**: [Multi-Source Weighted-Ensemble Precipitation](http://www.gloh2o.org/)
-- **IMERG**: [Integrated Multi-satellitE Retrievals for GPM](https://pmm.nasa.gov/data-access/downloads/gpm)
+- **ROCLOUD**: [A database for the outer sizes of tropical cyclones over the Middle Americas](https://data.mendeley.com/drafts/5bpzbwhynd)
 
 ### Related Documentation
 
@@ -660,6 +660,7 @@ Para más detalles sobre licencias de software científico, ver [choosealicense.
 - [API Reference](docs/api.md) *(pending)*
 
 ### Scientific References
-
+- Perez-Estrada & Dominguez (2025): A database for the outer sizes of tropical cyclones over the Middle Americas
+- Pérez-Alarcon et al (2021): Comparative climatology of outer tropical cyclone size using radial wind profiles
 - Knapp et al. (2010): The International Best Track Archive for Climate Stewardship (IBTrACS)
 - Beck et al. (2019): MSWEP V2 Global 3-hourly 0.1° Precipitation

@@ -117,7 +117,8 @@ src/
     ├── masks.py
     ├── components.py
     ├── index.py
-    └── pipeline.py
+    ├── pipeline.py
+    └── aggregation.py
 ```
 
 ---
@@ -382,6 +383,48 @@ compute_itchi_snapshot(...)
 
 Esta función representa una primera integración para un snapshot ciclónico.
 
+### 5.10. `aggregation.py`
+
+Construye productos derivados por evento a partir de varios snapshots temporales de ITCHI.
+
+Responsabilidades:
+
+- calcular el máximo temporal de ITCHI por celda;
+- calcular el acumulado acotado de ITCHI por celda;
+- preservar dimensiones y coordenadas cuando se usa `xarray`;
+- mantener los productos derivados dentro del intervalo `[0, 1]`.
+
+Productos principales:
+
+```text
+ITCHI_max = max(ITCHI_t)
+
+ITCHI_acc = 1 - product(1 - ITCHI_t)
+```
+---
+Uso esperado:
+```bash
+from itchi.aggregation import compute_event_products
+
+products = compute_event_products(
+    itchi=itchi_snapshots,
+    dim="time",
+)
+```
+
+Salidas esperadas:
+
+products["ITCHI_max"]
+products["ITCHI_acc"]
+
+Este módulo permite pasar del producto espacio-temporal base:
+
+ITCHI_g,h,t
+
+a productos resumidos por evento:
+
+ITCHI_max_g,h
+ITCHI_acc_g,h
 ---
 
 ## 6. Flujo computacional actual
@@ -403,7 +446,11 @@ H_Pdir, H_Pind, H_W
         ↓
 H_dir, H_ind
         ↓
-ITCHI
+ITCHI_g,h,t
+        ↓
+Agregación temporal por evento
+        ↓
+ITCHI_max_g,h, ITCHI_acc_g,h
 ```
 
 ---
@@ -590,15 +637,16 @@ ITCHI_acc = 1 - product(1 - ITCHI_t)
 
 El repositorio incluye pruebas unitarias para validar:
 
-| Archivo de prueba             | Objetivo                               |
-| ----------------------------- | -------------------------------------- |
-| `tests/test_precipitation.py` | Normalización de precipitación         |
-| `tests/test_masks.py`         | Máscaras directa, indirecta y exterior |
-| `tests/test_components.py`    | Componentes físicos                    |
-| `tests/test_index.py`         | Cálculo final de ITCHI                 |
-| `tests/test_pipeline.py`      | Integración por snapshot               |
-| `tests/test_geometry.py`      | Distancia radial y cuadrantes          |
-| `tests/test_units.py`         | Conversión de unidades                 |
+| Archivo de prueba | Objetivo |
+|---|---|
+| `tests/test_precipitation.py` | Normalización de precipitación |
+| `tests/test_masks.py` | Máscaras directa, indirecta y exterior |
+| `tests/test_components.py` | Componentes físicos |
+| `tests/test_index.py` | Cálculo final de ITCHI |
+| `tests/test_pipeline.py` | Integración por snapshot |
+| `tests/test_geometry.py` | Distancia radial y cuadrantes |
+| `tests/test_units.py` | Conversión de unidades |
+| `tests/test_aggregation.py` | Productos derivados por evento |
 
 ---
 
@@ -621,15 +669,14 @@ La implementación debe verificar como mínimo:
 
 Los siguientes módulos todavía deben desarrollarse:
 
-| Módulo               | Propósito                                         |
-| -------------------- | ------------------------------------------------- |
-| `tracks.py`          | Lectura y estandarización de trayectorias         |
-| `rocloud.py`         | Lectura y limpieza de radios ROCLOUD              |
-| `wind.py`            | Perfil radial de viento o normalización de viento |
-| `aggregation.py`     | Cálculo de `ITCHI_max` e `ITCHI_acc`              |
-| `io.py`              | Lectura y escritura de archivos                   |
-| `compiler.py`        | Corrida de múltiples snapshots o ciclones         |
-| `quality_control.py` | Validaciones físicas y computacionales            |
+| Módulo | Propósito |
+|---|---|
+| `tracks.py` | Lectura y estandarización de trayectorias |
+| `rocloud.py` | Lectura y limpieza de radios ROCLOUD |
+| `wind.py` | Perfil radial de viento o normalización de viento |
+| `io.py` | Lectura y escritura de archivos |
+| `compiler.py` | Corrida de múltiples snapshots o ciclones |
+| `quality_control.py` | Validaciones físicas y computacionales |
 
 ---
 
@@ -649,28 +696,25 @@ Estas decisiones se documentan como pendientes:
 
 ## 15. Siguiente paso técnico
 
-El siguiente paso recomendado es actualizar `pipeline.py` para incorporar `geometry.py` y `units.py`.
+El siguiente paso recomendado es construir `quality_control.py`.
 
-La nueva función debería aceptar:
+Este módulo deberá validar de forma explícita:
 
-```python
-compute_itchi_snapshot_from_grid(
-    precipitation=...,
-    q90=...,
-    q95=...,
-    q99=...,
-    lon=...,
-    lat=...,
-    center_lon=...,
-    center_lat=...,
-    r34_by_quadrant=...,
-    r34_unit="nm",
-    rocloud_by_quadrant=...,
-    rocloud_unit="km",
-    wind_hazard_normalized=...,
-)
-```
+1. que `ITCHI` permanezca dentro de `[0, 1]`;
+2. que `H_P`, `H_W`, `H_dir` y `H_ind` permanezcan dentro de `[0, 1]`;
+3. que `R34_q <= ROCLOUD_q` cuando ambos radios existan;
+4. que la región exterior tenga contribución nula;
+5. que las máscaras directa, indirecta y exterior no se solapen;
+6. que los campos principales preserven dimensiones y coordenadas;
+7. que las unidades geométricas estén en kilómetros antes de construir máscaras.
 
-Con ello, el cálculo dejaría de depender de un `radius_km` construido manualmente y se acercaría a la forma real de uso con datos de ciclones tropicales.
+Después de `quality_control.py`, los siguientes módulos recomendados serán:
+
+```text
+io.py
+tracks.py
+rocloud.py
+wind.py
+compiler.py
 
 ````
