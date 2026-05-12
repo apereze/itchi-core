@@ -433,7 +433,7 @@ Se usará un ambiente de Python con paquetes científicos y geoespaciales:
 | Pipeline integrado | ⏳ Planificado | Función principal de cálculo |
 | Documentación | 🔄 En progreso | Arquitectura y metodología |
 | Primer ejemplo funcional | ⏳ Planificado | Caso de prueba con ciclón real |
-| Módulos adicionales | ⏳ Futuro | tracks.py, rocloud.py, wind.py, aggregation.py, io.py |
+| Módulos adicionales |  🔄 En progreso | tracks.py, rocloud.py, wind.py, aggregation.py, io.py |
 
 **Leyenda**: ✅ Completado | 🔄 En progreso | ⏳ Planificado
 
