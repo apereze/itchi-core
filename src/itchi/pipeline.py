@@ -34,6 +34,7 @@ from itchi.index import compute_itchi_from_components
 from itchi.masks import build_region_masks
 from itchi.precipitation import compute_precipitation_hazard
 from itchi.quality_control import run_snapshot_quality_control
+from itchi.radii import resolve_attribution_radius, resolve_direct_radius
 from itchi.units import convert_quadrant_radii_to_km
 
 ArrayLike = np.ndarray | xr.DataArray
@@ -157,6 +158,10 @@ def compute_itchi_snapshot_from_grid(
     wind_hazard_normalized: ArrayLike,
     r34_unit: str = "nm",
     rocloud_unit: str = "km",
+    vmax_kt: float | None = None,
+    rmw_km: float | None = None,
+    fallback_direct_radius_km: float | None = None,
+    radius_fill_strategy: str = "mean_available",
     alpha_wind: float = 1.0,
     beta_precip_direct: float = 1.0,
     lambda_direct: float = 1.0,
@@ -170,10 +175,12 @@ def compute_itchi_snapshot_from_grid(
     snapshot. It performs the following steps:
 
     1. Convert R34 and ROCLOUD radii to kilometers.
-    2. Compute radial distance from each grid cell to the cyclone center.
-    3. Compute the relative quadrant of each grid cell.
-    4. Assign quadrant-specific R34_q and ROCLOUD_q to each grid cell.
-    5. Compute precipitation hazard, masks, components and final ITCHI.
+    2. Resolve the effective direct-region radius R_direct_q.
+    3. Resolve the external attribution radius ROCLOUD_q.
+    4. Compute radial distance from each grid cell to the cyclone center.
+    5. Compute the relative quadrant of each grid cell.
+    6. Assign quadrant-specific R_direct_q and ROCLOUD_q to each grid cell.
+    7. Compute precipitation hazard, masks, components and final ITCHI.
 
     Parameters
     ----------
@@ -195,16 +202,26 @@ def compute_itchi_snapshot_from_grid(
         Cyclone center latitude in degrees.
     r34_by_quadrant : Mapping[str, float, int or None]
         R34 radii by quadrant. Accepted keys are RNE, RSE, RSW, RNW
-        or aliases NE, SE, SW, NW.
+        or aliases NE, SE, SW, NW. These may be partially missing.
     rocloud_by_quadrant : Mapping[str, float, int or None]
         ROCLOUD radii by quadrant. Accepted keys are RNE, RSE, RSW, RNW
-        or aliases NE, SE, SW, NW.
+        or aliases NE, SE, SW, NW. These may be partially missing.
     wind_hazard_normalized : numpy.ndarray or xarray.DataArray
         Normalized wind hazard field V* in [0, 1].
     r34_unit : str, default="nm"
         Unit of R34 radii. IBTrACS commonly reports wind radii in nautical miles.
     rocloud_unit : str, default="km"
         Unit of ROCLOUD radii.
+    vmax_kt : float or None, default=None
+        Maximum sustained wind in knots. Used to identify tropical depressions
+        when R34 is unavailable.
+    rmw_km : float or None, default=None
+        Radius of maximum wind in kilometers. Used as fallback direct radius
+        for tropical depressions without R34.
+    fallback_direct_radius_km : float or None, default=None
+        Optional configured fallback radius in kilometers.
+    radius_fill_strategy : str, default="mean_available"
+        Strategy used to fill missing R34 or ROCLOUD quadrants.
     alpha_wind : float, default=1.0
         Weight/exponent for wind hazard in the direct component.
     beta_precip_direct : float, default=1.0
@@ -215,11 +232,12 @@ def compute_itchi_snapshot_from_grid(
         Weight/exponent for the indirect component in final ITCHI.
     run_quality_control : bool, default=False
         Whether to run standard snapshot quality-control checks.
+
     Returns
     -------
     dict[str, Any]
-        Dictionary containing geometry fields, masks, intermediate components
-        and final ITCHI.
+        Dictionary containing geometry fields, masks, intermediate components,
+        radius-resolution metadata and final ITCHI.
     """
     r34_km_by_quadrant = convert_quadrant_radii_to_km(
         radii_by_quadrant=r34_by_quadrant,
@@ -229,6 +247,19 @@ def compute_itchi_snapshot_from_grid(
     rocloud_km_by_quadrant = convert_quadrant_radii_to_km(
         radii_by_quadrant=rocloud_by_quadrant,
         input_unit=rocloud_unit,
+    )
+
+    resolved_direct_radius = resolve_direct_radius(
+        r34_by_quadrant=r34_km_by_quadrant,
+        vmax_kt=vmax_kt,
+        rmw_km=rmw_km,
+        fallback_radius_km=fallback_direct_radius_km,
+        fill_strategy=radius_fill_strategy,
+    )
+
+    resolved_rocloud_radius = resolve_attribution_radius(
+        rocloud_by_quadrant=rocloud_km_by_quadrant,
+        fill_strategy=radius_fill_strategy,
     )
 
     geometry = build_geometry_fields(
@@ -241,14 +272,14 @@ def compute_itchi_snapshot_from_grid(
     radius_km = geometry["radius_km"]
     quadrant = geometry["quadrant"]
 
-    r34_q = assign_quadrant_radius(
+    direct_radius_q = assign_quadrant_radius(
         quadrant=quadrant,
-        radii_by_quadrant=r34_km_by_quadrant,
+        radii_by_quadrant=resolved_direct_radius.radii,
     )
 
     rocloud_q = assign_quadrant_radius(
         quadrant=quadrant,
-        radii_by_quadrant=rocloud_km_by_quadrant,
+        radii_by_quadrant=resolved_rocloud_radius.radii,
     )
 
     result = compute_itchi_snapshot(
@@ -257,7 +288,7 @@ def compute_itchi_snapshot_from_grid(
         q95=q95,
         q99=q99,
         radius_km=radius_km,
-        r34_km=r34_q,
+        r34_km=direct_radius_q,
         rocloud_km=rocloud_q,
         wind_hazard_normalized=wind_hazard_normalized,
         alpha_wind=alpha_wind,
@@ -270,8 +301,13 @@ def compute_itchi_snapshot_from_grid(
     full_result = {
         "radius_km": radius_km,
         "quadrant": quadrant,
-        "R34_q": r34_q,
+        "R_direct_q": direct_radius_q,
         "ROCLOUD_q": rocloud_q,
+        "R_direct_source": resolved_direct_radius.source,
+        "R_direct_filled_quadrants": resolved_direct_radius.filled_quadrants,
+        "R_direct_used_fallback": resolved_direct_radius.used_fallback,
+        "ROCLOUD_source": resolved_rocloud_radius.source,
+        "ROCLOUD_filled_quadrants": resolved_rocloud_radius.filled_quadrants,
         **result,
     }
 

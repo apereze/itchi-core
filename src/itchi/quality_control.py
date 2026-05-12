@@ -524,7 +524,12 @@ def run_snapshot_quality_control(
         name="ITCHI",
     )
 
-    if "R34_q" in snapshot_result and "ROCLOUD_q" in snapshot_result:
+    if "R_direct_q" in snapshot_result and "ROCLOUD_q" in snapshot_result:
+        validate_r34_le_rocloud(
+            r34_q=snapshot_result["R_direct_q"],
+            rocloud_q=snapshot_result["ROCLOUD_q"],
+        )
+    elif "R34_q" in snapshot_result and "ROCLOUD_q" in snapshot_result:
         validate_r34_le_rocloud(
             r34_q=snapshot_result["R34_q"],
             rocloud_q=snapshot_result["ROCLOUD_q"],
@@ -539,6 +544,7 @@ def run_snapshot_quality_control(
         in {
             "radius_km",
             "quadrant",
+            "R_direct_q",
             "R34_q",
             "ROCLOUD_q",
             "M_direct",

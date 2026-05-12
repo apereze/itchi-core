@@ -194,8 +194,13 @@ def test_compute_itchi_snapshot_from_grid_returns_geometry_fields() -> None:
     expected_keys = {
         "radius_km",
         "quadrant",
-        "R34_q",
+        "R_direct_q",
         "ROCLOUD_q",
+        "R_direct_source",
+        "R_direct_filled_quadrants",
+        "R_direct_used_fallback",
+        "ROCLOUD_source",
+        "ROCLOUD_filled_quadrants",
         "M_direct",
         "M_indirect",
         "M_exterior",
@@ -326,10 +331,33 @@ def test_compute_itchi_snapshot_from_grid_preserves_xarray_dimensions() -> None:
         wind_hazard_normalized=wind_hazard,
     )
 
-    for value in result.values():
-        assert isinstance(value, xr.DataArray)
-        assert value.dims == precipitation.dims
-        assert value.shape == precipitation.shape
+    spatial_fields = [
+        "radius_km",
+        "quadrant",
+        "R_direct_q",
+        "ROCLOUD_q",
+        "M_direct",
+        "M_indirect",
+        "M_exterior",
+        "H_P",
+        "H_Pdir",
+        "H_Pind",
+        "H_W",
+        "H_dir",
+        "H_ind",
+        "ITCHI",
+    ]
+
+    for field in spatial_fields:
+        assert isinstance(result[field], xr.DataArray)
+        assert result[field].dims == precipitation.dims
+        assert result[field].shape == precipitation.shape
+
+    assert isinstance(result["R_direct_source"], str)
+    assert isinstance(result["R_direct_filled_quadrants"], tuple)
+    assert isinstance(result["R_direct_used_fallback"], bool)
+    assert isinstance(result["ROCLOUD_source"], str)
+    assert isinstance(result["ROCLOUD_filled_quadrants"], tuple)
 
     assert float(result["ITCHI"].min()) >= 0.0
     assert float(result["ITCHI"].max()) <= 1.0
@@ -397,7 +425,93 @@ def test_compute_itchi_snapshot_from_grid_runs_quality_control() -> None:
     )
 
     assert "ITCHI" in result
-    assert "R34_q" in result
+    assert "R_direct_q" in result
     assert "ROCLOUD_q" in result
     assert np.nanmin(result["ITCHI"]) >= 0.0
     assert np.nanmax(result["ITCHI"]) <= 1.0
+
+
+def test_compute_itchi_snapshot_from_grid_fills_partial_r34() -> None:
+    """
+    Test that missing R34 quadrants are filled from available quadrants.
+    """
+    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
+    lon = np.array([0.0, 0.2, 0.9, 1.5])
+    lat = np.zeros_like(lon)
+    wind_hazard = np.array([1.0, 0.5, 0.0, 0.0])
+
+    result = compute_itchi_snapshot_from_grid(
+        precipitation=precipitation,
+        q90=10.0,
+        q95=20.0,
+        q99=30.0,
+        lon=lon,
+        lat=lat,
+        center_lon=0.0,
+        center_lat=0.0,
+        r34_by_quadrant={
+            "RNE": 40.0,
+            "RSE": 50.0,
+            "RSW": np.nan,
+            "RNW": 60.0,
+        },
+        r34_unit="nm",
+        rocloud_by_quadrant={
+            "RNE": 130.0,
+            "RSE": 130.0,
+            "RSW": 130.0,
+            "RNW": 130.0,
+        },
+        rocloud_unit="km",
+        wind_hazard_normalized=wind_hazard,
+        run_quality_control=True,
+    )
+
+    assert result["R_direct_source"] == "filled_missing_with_mean_available"
+    assert result["R_direct_filled_quadrants"] == ("RSW",)
+    assert result["R_direct_used_fallback"] is False
+    assert "ITCHI" in result
+
+
+def test_compute_itchi_snapshot_from_grid_uses_rmw_for_tropical_depression() -> None:
+    """
+    Test that RMW is used as direct radius when no R34 exists and Vmax < 34 kt.
+    """
+    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
+    lon = np.array([0.0, 0.1, 0.3, 1.5])
+    lat = np.zeros_like(lon)
+    wind_hazard = np.array([1.0, 0.5, 0.2, 0.0])
+
+    result = compute_itchi_snapshot_from_grid(
+        precipitation=precipitation,
+        q90=10.0,
+        q95=20.0,
+        q99=30.0,
+        lon=lon,
+        lat=lat,
+        center_lon=0.0,
+        center_lat=0.0,
+        r34_by_quadrant={
+            "RNE": np.nan,
+            "RSE": np.nan,
+            "RSW": np.nan,
+            "RNW": np.nan,
+        },
+        r34_unit="nm",
+        rocloud_by_quadrant={
+            "RNE": 130.0,
+            "RSE": 130.0,
+            "RSW": 130.0,
+            "RNW": 130.0,
+        },
+        rocloud_unit="km",
+        vmax_kt=30.0,
+        rmw_km=25.0,
+        wind_hazard_normalized=wind_hazard,
+        run_quality_control=True,
+    )
+
+    assert result["R_direct_source"] == "RMW_fallback_for_tropical_depression"
+    assert result["R_direct_used_fallback"] is True
+    assert result["R_direct_filled_quadrants"] == ("RNE", "RSE", "RSW", "RNW")
+    assert "ITCHI" in result
