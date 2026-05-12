@@ -632,7 +632,7 @@ Usa la plantilla de issue de GitHub e incluye:
 
 [Adolfo Perez-Estrada](https://github.com/apereze)
 
-Universidad Nacional Autónoma de México (UNAM)  
+Universidad Nacional Autónoma de México (UNAM)
 Instituto de Ciencias de la Atmosfera y Cambio Climático (ICACC)
 
 ---
