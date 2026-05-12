@@ -33,6 +33,7 @@ from itchi.geometry import (
 from itchi.index import compute_itchi_from_components
 from itchi.masks import build_region_masks
 from itchi.precipitation import compute_precipitation_hazard
+from itchi.quality_control import run_snapshot_quality_control
 from itchi.units import convert_quadrant_radii_to_km
 
 ArrayLike = np.ndarray | xr.DataArray
@@ -51,6 +52,7 @@ def compute_itchi_snapshot(
     beta_precip_direct: float = 1.0,
     lambda_direct: float = 1.0,
     mu_indirect: float = 1.0,
+    run_quality_control: bool = False,
 ) -> dict[str, Any]:
     """
     Compute ITCHI for a single cyclone-centered precipitation snapshot.
@@ -86,6 +88,8 @@ def compute_itchi_snapshot(
         Weight/exponent for the direct component in final ITCHI.
     mu_indirect : float, default=1.0
         Weight/exponent for the indirect component in final ITCHI.
+    run_quality_control : bool, default=False
+        Whether to run standard snapshot quality-control checks.
 
     Returns
     -------
@@ -120,7 +124,7 @@ def compute_itchi_snapshot(
         mu_indirect=mu_indirect,
     )
 
-    return {
+    result = {
         "M_direct": masks["direct"],
         "M_indirect": masks["indirect"],
         "M_exterior": masks["exterior"],
@@ -132,6 +136,11 @@ def compute_itchi_snapshot(
         "H_ind": components["H_ind"],
         "ITCHI": itchi,
     }
+
+    if run_quality_control:
+        run_snapshot_quality_control(result)
+
+    return result
 
 
 def compute_itchi_snapshot_from_grid(
@@ -152,6 +161,7 @@ def compute_itchi_snapshot_from_grid(
     beta_precip_direct: float = 1.0,
     lambda_direct: float = 1.0,
     mu_indirect: float = 1.0,
+    run_quality_control: bool = False,
 ) -> dict[str, Any]:
     """
     Compute ITCHI directly from a lon/lat grid and cyclone-center metadata.
@@ -203,7 +213,8 @@ def compute_itchi_snapshot_from_grid(
         Weight/exponent for the direct component in final ITCHI.
     mu_indirect : float, default=1.0
         Weight/exponent for the indirect component in final ITCHI.
-
+    run_quality_control : bool, default=False
+        Whether to run standard snapshot quality-control checks.
     Returns
     -------
     dict[str, Any]
@@ -253,12 +264,18 @@ def compute_itchi_snapshot_from_grid(
         beta_precip_direct=beta_precip_direct,
         lambda_direct=lambda_direct,
         mu_indirect=mu_indirect,
+        run_quality_control=False,
     )
 
-    return {
+    full_result = {
         "radius_km": radius_km,
         "quadrant": quadrant,
         "R34_q": r34_q,
         "ROCLOUD_q": rocloud_q,
         **result,
     }
+
+    if run_quality_control:
+        run_snapshot_quality_control(full_result)
+
+    return full_result

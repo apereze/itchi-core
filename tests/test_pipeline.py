@@ -333,3 +333,71 @@ def test_compute_itchi_snapshot_from_grid_preserves_xarray_dimensions() -> None:
 
     assert float(result["ITCHI"].min()) >= 0.0
     assert float(result["ITCHI"].max()) <= 1.0
+
+
+def test_compute_itchi_snapshot_runs_quality_control() -> None:
+    """
+    Test that lower-level snapshot pipeline can run quality control.
+    """
+    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
+    radius_km = np.array([0.0, 25.0, 75.0, 150.0])
+    wind_hazard = np.array([1.0, 0.5, 0.0, 0.0])
+
+    result = compute_itchi_snapshot(
+        precipitation=precipitation,
+        q90=10.0,
+        q95=20.0,
+        q99=30.0,
+        radius_km=radius_km,
+        r34_km=50.0,
+        rocloud_km=100.0,
+        wind_hazard_normalized=wind_hazard,
+        run_quality_control=True,
+    )
+
+    assert "ITCHI" in result
+    assert np.nanmin(result["ITCHI"]) >= 0.0
+    assert np.nanmax(result["ITCHI"]) <= 1.0
+
+
+def test_compute_itchi_snapshot_from_grid_runs_quality_control() -> None:
+    """
+    Test that grid-based snapshot pipeline can run quality control.
+    """
+    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
+    lon = np.array([0.0, 0.2, 0.9, 1.5])
+    lat = np.zeros_like(lon)
+    wind_hazard = np.array([1.0, 0.5, 0.0, 0.0])
+
+    result = compute_itchi_snapshot_from_grid(
+        precipitation=precipitation,
+        q90=10.0,
+        q95=20.0,
+        q99=30.0,
+        lon=lon,
+        lat=lat,
+        center_lon=0.0,
+        center_lat=0.0,
+        r34_by_quadrant={
+            "RNE": 40.0,
+            "RSE": 40.0,
+            "RSW": 40.0,
+            "RNW": 40.0,
+        },
+        r34_unit="nm",
+        rocloud_by_quadrant={
+            "RNE": 130.0,
+            "RSE": 130.0,
+            "RSW": 130.0,
+            "RNW": 130.0,
+        },
+        rocloud_unit="km",
+        wind_hazard_normalized=wind_hazard,
+        run_quality_control=True,
+    )
+
+    assert "ITCHI" in result
+    assert "R34_q" in result
+    assert "ROCLOUD_q" in result
+    assert np.nanmin(result["ITCHI"]) >= 0.0
+    assert np.nanmax(result["ITCHI"]) <= 1.0
