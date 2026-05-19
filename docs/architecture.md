@@ -738,7 +738,7 @@ flowchart TD
     HDIR --> IDX["index.py<br/>ITCHI"]
     IDX --> QC["quality_control.py<br/>Validación"]
     QC --> AGG["aggregation.py<br/>ITCHI_max, ITCHI_acc"]
-    
+
     AGG --> OUT["Productos finales<br/>por evento"]
 ```
 
