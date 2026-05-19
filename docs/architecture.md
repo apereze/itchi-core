@@ -127,7 +127,8 @@ src/
     ├── quality_control.py
     ├── io.py
     ├── tracks.py
-    └── pipeline.py
+    ├── pipeline.py
+    └── compiler.py
 ```
 
 ---
@@ -661,6 +662,65 @@ Retorna diccionario con:
 
 ---
 
+### 5.17. `compiler.py`
+
+Orquesta múltiples snapshots de ITCHI para construir productos por evento.
+
+Responsabilidades:
+
+* recibir una secuencia de entradas compatibles con `compute_itchi_snapshot_from_grid`;
+* ejecutar el pipeline por cada snapshot;
+* apilar campos espaciales a lo largo de una dimensión temporal;
+* separar metadatos no espaciales por snapshot;
+* calcular productos por evento usando `aggregation.py`;
+* devolver una estructura organizada con `snapshots`, `metadata` y `event_products`.
+
+Estructura de salida esperada:
+
+```python
+{
+    "snapshots": {
+        "ITCHI": ...,
+        "H_P": ...,
+        "H_W": ...,
+        "H_dir": ...,
+        "H_ind": ...,
+        "R_direct_q": ...,
+        "ROCLOUD_q": ...,
+    },
+    "metadata": [
+        {
+            "time": ...,
+            "R_direct_source": ...,
+            "R_direct_filled_quadrants": ...,
+            "R_direct_used_fallback": ...,
+            "ROCLOUD_source": ...,
+            "ROCLOUD_filled_quadrants": ...,
+            "wind_hazard_source": ...,
+        }
+    ],
+    "event_products": {
+        "ITCHI_max": ...,
+        "ITCHI_acc": ...,
+    },
+}
+```
+
+Este módulo permite pasar de:
+
+```text
+ITCHI_g,h,t
+```
+
+a productos integrados por evento:
+
+```text
+ITCHI_max_g,h
+ITCHI_acc_g,h
+```
+
+---
+
 ## 6. Flujo computacional actual
 
 El flujo actual del repositorio es:
@@ -700,6 +760,10 @@ quality_control.py: Validación
 aggregation.py: Agregación temporal por evento
         ↓
 ITCHI_max_g,h, ITCHI_acc_g,h
+        ↓
+compiler.py: Orquestación de múltiples snapshots/eventos
+        ↓
+Productos finales compilados
 ```
 
 ---
@@ -739,7 +803,8 @@ flowchart TD
     IDX --> QC["quality_control.py<br/>Validación"]
     QC --> AGG["aggregation.py<br/>ITCHI_max, ITCHI_acc"]
 
-    AGG --> OUT["Productos finales<br/>por evento"]
+    AGG --> COMP["compiler.py<br/>Orquestación de eventos"]
+    COMP --> OUT["Productos finales<br/>compilados por evento"]
 ```
 
 ---
@@ -762,9 +827,10 @@ Con los módulos implementados, el flujo operativo es:
 11. Calcular H_Pdir, H_Pind, H_W (components.py)
 12. Calcular H_dir, H_ind (components.py)
 13. Calcular ITCHI (index.py)
-14. Validar (quality_control.py)
-15. Guardar producto ITCHI por snapshot (io.py)
+14. Validar snapshot (quality_control.py)
+15. Guardar producto por snapshot (io.py)
 16. Agregar por evento (aggregation.py)
+17. Orquestar múltiples snapshots/ciclones (compiler.py)
 ```
 
 ---
@@ -867,6 +933,7 @@ El repositorio incluye pruebas unitarias para validar:
 | `tests/test_quality_control.py` | Validaciones de calidad |
 | `tests/test_tracks.py` | Lectura de trayectorias |
 | `tests/test_io.py` | Lectura y escritura de archivos |
+| `tests/test_compiler.py` | Orquestación de múltiples snapshots y productos por evento |
 
 ---
 
@@ -895,9 +962,9 @@ Los siguientes módulos se consideran para desarrollo futuro:
 
 | Módulo | Propósito | Estado |
 |---|---|---|
-| `compiler.py` | Orquestación de múltiples snapshots y ciclones | Planeado |
-| `precipitation_snapshots.py` | Alineación temporal de precipitación | Opcional |
-| `climatology.py` | Manejo formal de percentiles Q90, Q95, Q99 | Futuro |
+| `precipitation_snapshots.py` | Alineación temporal de precipitación snapshot MSWEP/downscaling | Opcional |
+| `climatology.py` | Manejo formal de percentiles Q90, Q95 y Q99 | Futuro |
+| `examples/` | Scripts reproducibles de ejecución sintética y casos reales | Recomendado |
 
 ---
 
@@ -956,15 +1023,17 @@ Estas decisiones se documentan como pendientes:
 
 ### Corto plazo
 
-1. Completar cobertura de pruebas (target: > 90%).
-2. Documentar funciones con docstrings tipo NumPy.
-3. Crear ejemplos de uso en notebooks.
+1. Crear notebooks sintéticos de validación.
+2. Crear scripts mínimos en `examples/`.
+3. Verificar cobertura completa con `pytest`.
+4. Actualizar `README.md` con ejemplo de uso de `compile_itchi_event`.
 
 ### Mediano plazo
 
-1. Implementar `compiler.py` para múltiples snapshots/ciclones.
-2. Optimizar desempeño en mallas grandes.
-3. Validar con datos reales de ciclones históricos.
+1. Integrar un caso real de ciclón tropical.
+2. Implementar soporte formal para climatologías Q90/Q95/Q99.
+3. Implementar alineación temporal de precipitación snapshot.
+4. Optimizar desempeño en mallas grandes con `xarray` y `dask`.
 
 ### Largo plazo
 
