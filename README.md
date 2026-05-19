@@ -1,8 +1,9 @@
 # ITCHI Core
 
-[![Python 3.9+](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
-[![License: TBD](https://img.shields.io/badge/License-TBD-yellow.svg)](#16-licencia)
-[![Tests](https://img.shields.io/badge/Tests-Planned-orange.svg)]()
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
+[![Package](https://img.shields.io/badge/package-itchi--core-green.svg)](pyproject.toml)
+[![Tests](https://img.shields.io/badge/tests-pytest-blue.svg)](tests/)
+[![License: TBD](https://img.shields.io/badge/License-TBD-yellow.svg)](#licencia)
 
 **Integrated Tropical Cyclone Hazard Index**
 
@@ -13,30 +14,35 @@ Repositorio para el desarrollo del núcleo computacional de **ITCHI v0.1**, un �
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [General Description](#1-descripción-general)
-- [Repository Scope](#2-alcance-del-repositorio)
-- [Methodology](#3-principio-metodológico)
-- [Installation](#14-instalación)
-- [Repository Status](#repository-status)
+- [Descripción general](#descripción-general)
+- [Alcance del repositorio](#alcance-del-repositorio)
+- [Principio metodológico](#principio-metodológico)
+- [Flujo computacional](#flujo-computacional)
+- [Estructura del repositorio](#estructura-del-repositorio)
+- [Entradas esperadas](#entradas-esperadas)
+- [Salidas esperadas](#salidas-esperadas)
+- [Estado actual del proyecto](#estado-actual-del-proyecto)
+- [Instalación](#instalación)
+- [Ejemplos reproducibles](#ejemplos-reproducibles)
+- [Pruebas y control de calidad](#pruebas-y-control-de-calidad)
 - [Data Requirements](#data-requirements)
 - [Contributing](#contributing)
-- [License](#16-licencia)
+- [Autoría](#autoría)
+- [Licencia](#licencia)
 - [References](#references)
 
 ---
 
 ## Quick Start
 
-Get up and running with ITCHI Core in minutes:
-
 ```bash
 # Clone the repository
 git clone https://github.com/apereze/itchi-core.git
 cd itchi-core
 
-# Create and activate environment (using conda)
+# Create and activate environment
 conda env create -f environment.yml
-conda activate itchi-core
+conda activate itchi
 
 # Install package in development mode
 pip install -e .
@@ -45,50 +51,64 @@ pip install -e .
 python -c "import itchi; print('ITCHI installed successfully')"
 
 # Run tests
-pytest tests/
+python -m pytest tests/
+
+# Run synthetic smoke test
+python examples/smoke_test_synthetic.py
 ```
 
-For detailed setup instructions, see [Installation](#14-instalación).
+Optional diagnostic figure:
+
+```bash
+python examples/smoke_test_synthetic.py \
+  --plot \
+  --figure-path outputs/figures/smoke_test_synthetic.png
+```
+
+The `outputs/` directory is ignored by Git.
 
 ---
 
-## 1. Descripción general
+## Descripción general
 
 **ITCHI** significa **Integrated Tropical Cyclone Hazard Index**.
 
 La versión inicial, **ITCHI v0.1**, se plantea como un índice físico continuo entre `0` y `1`, diseñado para representar el peligro asociado a ciclones tropicales en una malla espacial.
 
-El índice integra tres componentes principales:
+El índice integra tres fuentes principales de peligro:
 
-1. **Peligro por precipitación directa**, asociado a lluvia dentro de la región de viento significativo del ciclón.
-2. **Peligro por viento**, estimado a partir de la estructura radial del ciclón.
-3. **Peligro por precipitación indirecta**, asociado a bandas externas del ciclón.
+1. **Precipitación directa**, asociada a lluvia dentro de la región directa del ciclón.
+2. **Viento**, estimado a partir de un campo normalizado de peligro por viento.
+3. **Precipitación indirecta**, asociada a bandas externas dentro de la región atribuible al ciclón.
 
-El objetivo de este repositorio es construir de forma organizada, trazable y reproducible el cálculo del índice ITCHI.
+El objetivo de este repositorio es construir de forma organizada, trazable, modular y reproducible el cálculo del índice ITCHI.
 
 ---
 
-## 2. Alcance del repositorio
+## Alcance del repositorio
 
 Este repositorio contiene únicamente los elementos necesarios para la **creación del índice ITCHI**.
 
 ### Incluye
 
 - Lectura y estandarización de datos de trayectoria ciclónica.
-- Lectura de radios de viento, como `R34`.
-- Lectura de radios estructurales externos, como `ROCLOUD`.
-- Lectura de campos de precipitación tipo snapshot.
-- Alineación temporal entre precipitación y tiempos sinópticos del ciclón.
-- Cálculo de percentiles climatológicos locales de precipitación.
-- Cálculo del peligro normalizado por precipitación.
-- Cálculo del peligro normalizado por viento.
+- Lectura y limpieza de radios de viento, como `R34`.
+- Resolución del radio directo efectivo `R_direct`.
+- Manejo de depresiones tropicales sin `R34` mediante `RMW`.
+- Lectura y limpieza de radios estructurales externos, como `ROCLOUD`.
+- Lectura/escritura de productos científicos con `xarray`.
+- Cálculo de peligro normalizado por precipitación.
+- Cálculo o uso de peligro normalizado por viento.
 - Construcción de máscaras espaciales:
-  - región directa,
-  - región indirecta,
+  - región directa;
+  - región indirecta;
   - región exterior.
-- Cálculo de los componentes físicos del índice.
+- Cálculo de componentes físicos del índice.
 - Cálculo final de `ITCHI`.
-- Generación de productos derivados por evento.
+- Control de calidad físico/computacional.
+- Compilación de múltiples snapshots por evento.
+- Productos derivados por evento: `ITCHI_max` e `ITCHI_acc`.
+- Notebooks y scripts sintéticos de validación.
 
 ### No incluye por ahora
 
@@ -96,170 +116,220 @@ Este repositorio contiene únicamente los elementos necesarios para la **creaci�
 - Modelos de aprendizaje automático.
 - Calibración estadística avanzada.
 - Visualizaciones finales para publicación.
-- Manuscrito científico completo.
 - Dashboard o aplicación web.
+- Manuscrito científico completo.
 
 Estos elementos podrán desarrollarse posteriormente en otros módulos o repositorios.
 
 ---
 
-## 3. Principio metodológico
+## Principio metodológico
 
 ITCHI v0.1 distingue tres regiones alrededor del ciclón tropical:
 
 | Región | Condición conceptual | Interpretación |
 |---|---|---|
-| Región directa | Dentro de `R34` | Zona con viento significativo y precipitación directa |
-| Región indirecta | Fuera de `R34`, pero dentro de `ROCLOUD` | Zona de bandas externas asociadas al ciclón |
-| Región exterior | Fuera de `ROCLOUD` | Zona no atribuida al ciclón en ITCHI v0.1 |
+| Región directa | `r <= R_direct_q` | Zona de peligro directo por viento y precipitación |
+| Región indirecta | `R_direct_q < r <= ROCLOUD_q` | Zona de precipitación externa atribuida al ciclón |
+| Región exterior | `r > ROCLOUD_q` | Zona sin contribución al índice |
 
 La separación conceptual es:
 
 ```text
-Peligro directo = viento + precipitación dentro de R34
+Peligro directo = viento + precipitación dentro de R_direct
 ```
 
 ```text
-Peligro indirecto = precipitación entre R34 y ROCLOUD
+Peligro indirecto = precipitación entre R_direct y ROCLOUD
 ```
 
 La región exterior no contribuye al índice.
 
----
+### `R34` frente a `R_direct`
 
-## 4. Tratamiento de la precipitación
+El repositorio distingue explícitamente entre:
 
-En esta versión del repositorio, la precipitación se manejará como **snapshot**, no como acumulado temporal.
+| Variable | Significado |
+|---|---|
+| `R34` | Radio observado de vientos de 34 kt |
+| `R_direct` | Radio efectivo usado para definir la región directa |
+| `RMW` | Radio de máximo viento |
+| `ROCLOUD` | Radio externo de atribución nubosa/precipitante |
 
-Esto significa que el campo de precipitación representa el estado o intensidad de la precipitación en un tiempo determinado.
-
-Por tanto, ITCHI no debe asumir que la precipitación se acumula de 3 h a 6 h.
-
-La lógica general será:
+Reglas principales:
 
 ```text
-campo de precipitación en snapshot
-        ↓
-alineación con tiempo sinóptico del ciclón
-        ↓
-normalización con percentiles climatológicos locales
-        ↓
-peligro por precipitación
-        ↓
-ITCHI
+Si R34 existe:
+    R_direct_q = R34_q
+
+Si R34 es parcial:
+    faltantes de R34 se rellenan con el promedio de cuadrantes disponibles
+
+Si no existe R34 y Vmax < 34 kt:
+    R_direct_q = RMW
+
+Si no existe R34 ni RMW:
+    se usa fallback_direct_radius_km, si está configurado
 ```
 
-Esta decisión permite que el índice sea compatible con:
-
-* MSWEP histórico;
-* productos de pronóstico;
-* hindcasts;
-* productos downscalados;
-* productos corregidos por sesgo.
+Esto evita asignar artificialmente `R34` a depresiones tropicales que físicamente no alcanzan vientos de 34 kt.
 
 ---
 
-## 5. Resolución temporal del índice
+## Tratamiento de la precipitación
 
-Aunque la precipitación se maneje como snapshot, el índice se calculará en tiempos sinópticos asociados al ciclón:
+En esta versión, la precipitación se maneja como **snapshot**, no como acumulado temporal.
+
+Esto significa que el campo de precipitación representa el estado o intensidad de la precipitación en un tiempo determinado. Por tanto, ITCHI no debe asumir que la precipitación se acumula de 3 h a 6 h.
+
+Esta decisión permite compatibilidad con:
+
+- MSWEP histórico;
+- productos de pronóstico;
+- hindcasts;
+- productos downscalados;
+- productos corregidos por sesgo.
+
+---
+
+## Resolución temporal del índice
+
+El índice se calcula en tiempos sinópticos asociados al ciclón:
 
 ```text
 00, 06, 12 y 18 UTC
 ```
 
-Esto permite mantener coherencia temporal con:
+Esto mantiene coherencia temporal con:
 
-* trayectoria del ciclón;
-* intensidad del ciclón;
-* radios de viento;
-* `R34`;
-* `ROCLOUD`;
-* perfil radial de viento.
+- trayectoria del ciclón;
+- intensidad;
+- radios de viento;
+- `R34`;
+- `RMW`;
+- `ROCLOUD`;
+- perfil radial de viento;
+- precipitación snapshot.
 
 ---
 
-## 6. Normalización de precipitación
+## Normalización de precipitación
 
-El peligro por precipitación se calculará usando percentiles climatológicos locales.
+El peligro por precipitación se calcula con percentiles climatológicos locales:
 
-Los percentiles principales serán:
-
-| Percentil | Interpretación                     |
-| --------- | ---------------------------------- |
-| `P90`     | Inicio de peligro bajo u ocasional |
-| `P95`     | Peligro alto                       |
-| `P99`     | Peligro máximo                     |
+| Percentil | Interpretación |
+|---|---|
+| `P90` | Inicio de peligro bajo u ocasional |
+| `P95` | Peligro alto |
+| `P99` | Peligro máximo |
 
 La normalización debe calcularse por:
 
-* celda espacial;
-* mes;
-* hora sinóptica o tiempo válido comparable.
+- celda espacial;
+- mes;
+- hora sinóptica o tiempo válido comparable.
 
-Esto evita comparar directamente regiones con climatologías de lluvia distintas.
-
----
-
-## 7. Componentes del índice
-
-El índice se construye a partir de los siguientes componentes:
-
-| Componente | Descripción                                     |
-| ---------- | ----------------------------------------------- |
-| `H_P`      | Peligro normalizado por precipitación           |
-| `H_W`      | Peligro normalizado por viento                  |
-| `H_Pdir`   | Precipitación directa dentro de `R34`           |
-| `H_Pind`   | Precipitación indirecta entre `R34` y `ROCLOUD` |
-| `H_dir`    | Componente directo del peligro                  |
-| `H_ind`    | Componente indirecto del peligro                |
-| `ITCHI`    | Índice integrado final                          |
-
-La combinación de componentes se realizará con una unión acotada para mantener el índice dentro del intervalo `[0, 1]`.
-
----
-
-## 8. Fórmula conceptual
-
-El componente directo combina viento y precipitación directa:
+La función por tramos es:
 
 ```text
-H_dir = 1 - (1 - H_W) * (1 - H_Pdir)
+P < Q90        → H_P = 0
+Q90 ≤ P < Q95 → H_P aumenta de 0 a 0.5
+Q95 ≤ P < Q99 → H_P aumenta de 0.5 a 1
+P ≥ Q99       → H_P = 1
 ```
 
-El componente indirecto se define como:
+---
+
+## Componentes del índice
+
+| Componente | Descripción |
+|---|---|
+| `H_P` | Peligro normalizado por precipitación |
+| `H_W` | Peligro normalizado por viento |
+| `H_Pdir` | Precipitación directa dentro de `R_direct` |
+| `H_Pind` | Precipitación indirecta entre `R_direct` y `ROCLOUD` |
+| `H_dir` | Componente directo |
+| `H_ind` | Componente indirecto |
+| `ITCHI` | Índice integrado final |
+
+---
+
+## Fórmula conceptual
+
+Componente directo:
+
+```text
+H_dir = 1 - (1 - H_W)^alpha * (1 - H_Pdir)^beta
+```
+
+Componente indirecto:
 
 ```text
 H_ind = H_Pind
 ```
 
-El índice final se calcula como:
+Índice final:
 
 ```text
-ITCHI = 1 - (1 - H_dir) * (1 - H_ind)
+ITCHI = 1 - (1 - H_dir)^lambda_direct * (1 - H_ind)^mu_indirect
 ```
 
-Esta formulación permite que el índice se active por:
+En la versión base:
 
-* viento intenso;
-* precipitación directa intensa;
-* precipitación indirecta intensa;
-* combinación de estos procesos.
+```text
+alpha = beta = lambda_direct = mu_indirect = 1.0
+```
 
 ---
 
-## 9. Estructura inicial esperada del repositorio
+## Flujo computacional
 
-La estructura del repositorio se irá construyendo progresivamente.
+```text
+Track del ciclón
+    center_lon, center_lat, vmax_kt, rmw_km, R34
+        ↓
+ROCLOUD por cuadrante
+        ↓
+radii.py
+    resolución de R_direct_q y ROCLOUD_q
+        ↓
+geometry.py
+    radius_km, quadrant
+        ↓
+precipitation.py
+    H_P desde precipitación snapshot y Q90/Q95/Q99
+        ↓
+wind.py
+    V* proporcionado o calculado con Vmax/RMW
+        ↓
+masks.py
+    M_direct, M_indirect, M_exterior
+        ↓
+components.py
+    H_Pdir, H_Pind, H_W, H_dir, H_ind
+        ↓
+index.py
+    ITCHI_g,h,t
+        ↓
+quality_control.py
+    validaciones físicas y estructurales
+        ↓
+compiler.py + aggregation.py
+    snapshots, metadata, ITCHI_max, ITCHI_acc
+```
 
-Una estructura inicial recomendada es:
+---
+
+## Estructura del repositorio
 
 ```text
 itchi-core/
 │
 ├── README.md
-├── .gitignore
 ├── environment.yml
 ├── pyproject.toml
+├── .pre-commit-config.yaml
+├── .gitignore
 │
 ├── configs/
 │   └── default.yaml
@@ -267,377 +337,336 @@ itchi-core/
 ├── docs/
 │   └── architecture.md
 │
-├── notebooks/
-│   └── 00_check_inputs.ipynb
+├── examples/
+│   ├── README.md
+│   └── smoke_test_synthetic.py
 │
-├── scripts/
-│   └── run_single_storm.py
+├── notebooks/
+│   └── 00_smoke_test_synthetic.ipynb
 │
 ├── src/
 │   └── itchi/
 │       ├── __init__.py
+│       ├── constants.py
 │       ├── config.py
-│       ├── precipitation.py
+│       ├── units.py
+│       ├── radii.py
 │       ├── geometry.py
+│       ├── precipitation.py
 │       ├── masks.py
-│       ├── wind.py
 │       ├── components.py
 │       ├── index.py
-│       └── pipeline.py
+│       ├── aggregation.py
+│       ├── quality_control.py
+│       ├── io.py
+│       ├── tracks.py
+│       ├── rocloud.py
+│       ├── wind.py
+│       ├── pipeline.py
+│       └── compiler.py
 │
 └── tests/
-    └── test_index.py
+    ├── test_aggregation.py
+    ├── test_components.py
+    ├── test_compiler.py
+    ├── test_geometry.py
+    ├── test_index.py
+    ├── test_io.py
+    ├── test_masks.py
+    ├── test_pipeline.py
+    ├── test_precipitation.py
+    ├── test_quality_control.py
+    ├── test_radii.py
+    ├── test_rocloud.py
+    ├── test_tracks.py
+    ├── test_units.py
+    └── test_wind.py
 ```
-
-Esta estructura puede crecer conforme avance el desarrollo.
 
 ---
 
-## 10. Entradas esperadas
+## Entradas esperadas
 
 Las entradas mínimas para calcular ITCHI son:
 
 1. Datos de trayectoria del ciclón.
-2. Intensidad del ciclón.
-3. Radios de viento, especialmente `R34`.
-4. Radios `ROCLOUD`.
-5. Campo de precipitación tipo snapshot.
-6. Percentiles climatológicos locales de precipitación.
-7. Parámetros o perfiles de viento radial.
+2. Centro del ciclón por tiempo: `center_lon`, `center_lat`.
+3. Intensidad: `vmax_kt`.
+4. Radio de máximo viento: `rmw_km`, cuando esté disponible.
+5. Radios de viento, especialmente `R34`.
+6. Radios externos `ROCLOUD`.
+7. Campo de precipitación tipo snapshot.
+8. Percentiles climatológicos locales: `Q90`, `Q95`, `Q99`.
+9. Campo de viento normalizado `V*` o parámetros para construirlo.
 
 ---
 
-## 11. Salidas esperadas
+## Salidas esperadas
 
-Las salidas mínimas del repositorio serán:
-
-| Salida        | Descripción                         |
-| ------------- | ----------------------------------- |
-| `ITCHI_g_h_t` | Índice por celda, ciclón y tiempo   |
-| `H_P`         | Peligro por precipitación           |
-| `H_W`         | Peligro por viento                  |
-| `H_Pdir`      | Precipitación directa               |
-| `H_Pind`      | Precipitación indirecta             |
-| `H_dir`       | Componente directo                  |
-| `H_ind`       | Componente indirecto                |
-| `ITCHI_max`   | Máximo por evento                   |
-| `ITCHI_acc`   | Acumulado o persistencia por evento |
-
----
-
-## 12. Estado actual del proyecto
-
-Este repositorio se encuentra en etapa inicial.
-
-La prioridad actual es construir de forma ordenada:
-
-1. la estructura base del repositorio;
-2. la documentación metodológica mínima;
-3. las funciones centrales del índice;
-4. una primera corrida para un ciclón individual;
-5. pruebas básicas de consistencia.
+| Salida | Descripción |
+|---|---|
+| `ITCHI_g,h,t` | Índice por celda y tiempo |
+| `H_P` | Peligro por precipitación |
+| `H_W` | Peligro por viento |
+| `H_Pdir` | Precipitación directa |
+| `H_Pind` | Precipitación indirecta |
+| `H_dir` | Componente directo |
+| `H_ind` | Componente indirecto |
+| `M_direct` | Máscara de región directa |
+| `M_indirect` | Máscara de región indirecta |
+| `M_exterior` | Máscara exterior |
+| `ITCHI_max` | Máximo por evento |
+| `ITCHI_acc` | Acumulado acotado o persistencia por evento |
 
 ---
 
-## 13. Reglas de consistencia
-
-La implementación debe verificar que:
-
-* `ITCHI` siempre esté dentro del intervalo `[0, 1]`;
-* la región exterior no contribuya al índice;
-* `R34` no sea mayor que `ROCLOUD` cuando ambas variables estén disponibles;
-* las máscaras directa, indirecta y exterior sean coherentes;
-* la precipitación usada sea comparable con la climatología usada para normalizarla;
-* los campos de pronóstico o downscaling estén alineados por `valid_time`.
-
----
-
-## 14. Instalación
-
-### Requisitos previos
-
-- Python 3.9 o superior
-- Conda o pip (recomendado: conda)
-- Git
-
-### Configuración
-
-#### Opción 1: Usando Conda (recomendado)
-
-```bash
-# Clonar el repositorio
-git clone https://github.com/apereze/itchi-core.git
-cd itchi-core
-
-# Crear el ambiente
-conda env create -f environment.yml
-
-# Activar el ambiente
-conda activate itchi-core
-
-# Instalar el paquete en modo desarrollo
-pip install -e .
-```
-
-#### Opción 2: Usando pip
-
-```bash
-# Clonar el repositorio
-git clone https://github.com/apereze/itchi-core.git
-cd itchi-core
-
-# Crear un ambiente virtual
-python -m venv venv
-source venv/bin/activate  # En Windows: venv\Scripts\activate
-
-# Instalar dependencias
-pip install -r requirements.txt
-pip install -e .
-```
-
-### Verificar la instalación
-
-```bash
-# Verificar que el paquete está instalado
-python -c "import itchi; print('✓ ITCHI instalado correctamente')"
-
-# Ejecutar las pruebas
-pytest tests/ -v
-```
-
-### Dependencias principales
-
-Se usará un ambiente de Python con paquetes científicos y geoespaciales:
-
-* `numpy` — computación numérica
-* `pandas` — manejo de datos tabulares
-* `xarray` — datos multidimensionales etiquetados
-* `geopandas` — datos geoespaciales
-* `shapely` — geometría espacial
-* `pyproj` — transformaciones de coordenadas
-* `scipy` — algoritmos científicos
-* `matplotlib` — visualización
-* `cartopy` — mapas geográficos
-* `tqdm` — barras de progreso
-* `pytest` — pruebas unitarias
-
----
-
-## Repository Status
+## Estado actual del proyecto
 
 | Componente | Estado | Descripción |
 |---|---|---|
-| Estructura base | ✅ Completado | Repositorio y documentación inicial |
-| Módulos core | ⏳ En desarrollo | precipitation, geometry, masks, components, index |
-| Pruebas unitarias | ⏳ Planificado | Cobertura para todos los módulos |
-| Pipeline integrado | ⏳ Planificado | Función principal de cálculo |
-| Documentación | 🔄 En progreso | Arquitectura y metodología |
-| Primer ejemplo funcional | ⏳ Planificado | Caso de prueba con ciclón real |
-| Módulos adicionales |  🔄 En progreso | tracks.py, rocloud.py, wind.py, aggregation.py, io.py |
+| Estructura base | ✅ Completado | Repositorio, ambiente, configuración y paquete instalable |
+| Módulos core | ✅ Completado | Precipitación, geometría, máscaras, componentes e índice |
+| Radios y unidades | ✅ Completado | Conversión de unidades, cuadrantes, `R_direct`, `ROCLOUD` |
+| Viento | ✅ Completado | Perfil radial simple y normalización `V*` |
+| Pipeline integrado | ✅ Completado | Cálculo por snapshot con control de calidad opcional |
+| Agregación | ✅ Completado | `ITCHI_max` e `ITCHI_acc` |
+| Compiler | ✅ Completado | Orquestación de múltiples snapshots por evento |
+| I/O | ✅ Completado | Conversión a `xarray.Dataset`, lectura y escritura |
+| Tracks y ROCLOUD | ✅ Completado | Estandarización tabular y extracción de radios |
+| Pruebas unitarias | ✅ Completado | Cobertura por módulo con `pytest` |
+| Notebook sintético | ✅ Completado | Smoke test visual/reproducible |
+| Ejemplo ejecutable | ✅ Completado | Script sintético desde terminal |
+| Caso real | ⏳ Pendiente | Integración con datos reales de un ciclón |
+| Climatología formal | ⏳ Pendiente | Cálculo/lectura robusta de Q90/Q95/Q99 |
+| Alineación temporal avanzada | ⏳ Pendiente | Módulo específico para precipitación snapshot |
 
-**Leyenda**: ✅ Completado | 🔄 En progreso | ⏳ Planificado
+**Leyenda**: ✅ Completado | 🔄 En progreso | ⏳ Pendiente
+
+---
+
+## Instalación
+
+### Requisitos previos
+
+- Python 3.11 o superior
+- Conda o pip
+- Git
+
+### Opción 1: Conda
+
+```bash
+git clone https://github.com/apereze/itchi-core.git
+cd itchi-core
+
+conda env create -f environment.yml
+conda activate itchi
+
+pip install -e .
+```
+
+### Opción 2: pip/venv
+
+```bash
+git clone https://github.com/apereze/itchi-core.git
+cd itchi-core
+
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+pip install -e ".[dev]"
+```
+
+### Verificar instalación
+
+```bash
+python -c "import itchi; print('✓ ITCHI instalado correctamente')"
+python -m pytest tests/
+pre-commit run --all-files
+```
+
+---
+
+## Ejemplos reproducibles
+
+### Synthetic smoke test
+
+```bash
+python examples/smoke_test_synthetic.py
+```
+
+Con figura diagnóstica:
+
+```bash
+python examples/smoke_test_synthetic.py \
+  --plot \
+  --figure-path outputs/figures/smoke_test_synthetic.png
+```
+
+### Notebook sintético
+
+```bash
+jupyter lab notebooks/00_smoke_test_synthetic.ipynb
+```
+
+---
+
+## Pruebas y control de calidad
+
+Ejecutar todas las pruebas:
+
+```bash
+python -m pytest tests/
+```
+
+Ejecutar pre-commit:
+
+```bash
+pre-commit run --all-files
+```
+
+Ejecutar pruebas de un módulo específico:
+
+```bash
+python -m pytest tests/test_pipeline.py
+python -m pytest tests/test_compiler.py
+```
+
+Reglas de consistencia verificadas:
+
+- `ITCHI` permanece en `[0, 1]`.
+- `H_P`, `H_W`, `H_dir`, `H_ind`, `H_Pdir` y `H_Pind` permanecen en `[0, 1]`.
+- `R_direct_q <= ROCLOUD_q`.
+- La región exterior no contribuye al índice.
+- Las máscaras directa, indirecta y exterior no se solapan.
+- Los campos preservan dimensiones y coordenadas cuando se usa `xarray`.
+- Las unidades geométricas se normalizan a kilómetros.
 
 ---
 
 ## Data Requirements
 
-El repositorio requiere datos en los siguientes formatos:
+El repositorio requiere datos en los siguientes formatos.
 
 ### 1. Trayectorias de ciclones tropicales
 
-**Formato**: IBTrACS o equivalente
-**Variables mínimas**:
-- `time` — timestamp (UTC)
-- `lat`, `lon` — posición del centro
-- `vmax` — velocidad máxima sostenida (kt)
-- `mslp` — presión mínima a nivel del mar (mb)
+**Formato:** IBTrACS, best-track local, CSV o Parquet.
 
-**Fuente recomendada**: [IBTrACS](https://www.ncei.noaa.gov/products/international-best-track-archive)
+Variables mínimas:
+
+- `storm_id`
+- `time`
+- `lat`
+- `lon`
+- `vmax_kt`
+- `pmin_hpa` opcional
+- `rmw_km` opcional
 
 ### 2. Radios de viento
 
-**Formato**: NetCDF o CSV
-**Variables**:
-- `R34_NE`, `R34_SE`, `R34_SW`, `R34_NW` — radio de vientos 34 nudos (nm)
-- `R50_*`, `R64_*` — opcional, radios adicionales
-- `ROCLOUD_*` — radio de cobertura de nube (km)
+Variables esperadas:
 
-### 3. Campos de precipitación
+- `R34_NE`, `R34_SE`, `R34_SW`, `R34_NW`, o equivalentes.
+- Unidad típica: millas náuticas (`nm`).
 
-**Formato**: NetCDF o Zarr
-**Especificaciones**:
-- Resolución: 0.1° × 0.1° (compatible con MSWEP)
-- Tipo: snapshot (no acumulado)
-- Unidades: mm/h o mm/día
-- Cobertura: al menos +/- 5° del centro del ciclón
+### 3. Radios ROCLOUD
 
-**Fuentes compatibles**:
-- [MSWEP](http://www.gloh2o.org/) — histórico
-- Pronósticos numéricos (GFS, HWRF, etc.)
-- Satélite (IMERG, PERSIANN, etc.)
+Variables esperadas:
 
-### 4. Percentiles climatológicos
+- `ROCLOUD_RNE`, `ROCLOUD_RSE`, `ROCLOUD_RSW`, `ROCLOUD_RNW`, o equivalentes.
+- Unidad esperada: kilómetros (`km`).
 
-**Variables requeridas**:
-- `Q90`, `Q95`, `Q99` — percentiles por celda espacial
-- Dimensiones: `(lat, lon, month, hour)`
-- Unidades: mismas que el campo de precipitación
+### 4. Campos de precipitación
 
-**Generación**: Ver `notebooks/compute_climatology.ipynb` (por crear)
+**Formato:** NetCDF o Zarr.
 
-### 5. Estructura de directorios de datos
+Especificaciones:
 
-```
-data/
-├── examples/
-│   ├── tc_track_sample.nc
-│   ├── precipitation_sample.nc
-│   └── climatology_sample.nc
-├── raw/
-│   ├── ibtracs/
-│   ├── precipitation/
-│   └── climatology/
-└── processed/
-    └── itchi_products/
-```
+- Resolución objetivo: 0.1° × 0.1°.
+- Tipo: snapshot, no acumulado temporal.
+- Unidades: deben coincidir con las climatologías usadas para Q90/Q95/Q99.
+- Cobertura: dominio suficiente alrededor del centro del ciclón.
+
+Fuentes compatibles:
+
+- MSWEP histórico.
+- Pronósticos numéricos.
+- Hindcasts.
+- Productos downscalados.
+- Productos corregidos por sesgo.
+
+### 5. Percentiles climatológicos
+
+Variables requeridas:
+
+- `Q90`
+- `Q95`
+- `Q99`
+
+Deben estar calculados por celda espacial y por ventana temporal comparable.
 
 ---
 
 ## Contributing
 
-Las contribuciones son bienvenidas. Para contribuir, por favor:
+Las contribuciones son bienvenidas.
 
-### 1. Configurar el ambiente de desarrollo
+### Configuración de desarrollo
 
 ```bash
-# Clonar tu fork
 git clone https://github.com/YOUR_USERNAME/itchi-core.git
 cd itchi-core
 
-# Crear rama de desarrollo
-git checkout -b feature/nombre-de-tu-feature
+conda env create -f environment.yml
+conda activate itchi
+pip install -e .
+pre-commit install
 ```
 
-### 2. Convenciones de código
+### Convenciones de código
 
-- **Estilo**: PEP 8 (usa `black` o `flake8`)
-- **Type hints**: Recomendados para funciones públicas
-- **Docstrings**: NumPy style para documentación
-- **Tests**: Toda nueva funcionalidad debe incluir pruebas
+- Estilo: `black` con línea máxima de 88 caracteres.
+- Linting: `ruff`.
+- Type hints recomendados en funciones públicas.
+- Docstrings estilo NumPy.
+- Toda nueva funcionalidad debe incluir pruebas.
+- No subir datos pesados ni productos derivados.
 
-Ejemplo:
+### Commits
 
-```python
-def compute_precipitation_hazard(
-    precipitation: np.ndarray,
-    q90: float,
-    q95: float,
-    q99: float,
-) -> np.ndarray:
-    """
-    Compute normalized precipitation hazard.
+Formato sugerido:
 
-    Parameters
-    ----------
-    precipitation : np.ndarray
-        Precipitation field in mm/h
-    q90, q95, q99 : float
-        Local climatological percentiles
-
-    Returns
-    -------
-    np.ndarray
-        Normalized hazard H_P in [0, 1]
-    """
-    pass
-```
-
-### 3. Commits
-
-Usa mensajes descriptivos siguiendo el formato:
-
-```
+```text
 type: brief description
-
-Detailed explanation if needed.
-
-- Bullet point 1
-- Bullet point 2
 ```
 
-**Tipos**: `feat`, `fix`, `docs`, `test`, `refactor`, `style`, `chore`
+Tipos recomendados:
+
+- `feat`
+- `fix`
+- `docs`
+- `test`
+- `refactor`
+- `style`
+- `chore`
 
 Ejemplo:
+
+```text
+feat: add event-level ITCHI compiler
 ```
-feat: add precipitation normalization module
-
-Implements H_P calculation with piecewise linear normalization
-following architecture specification. Includes unit tests and
-docstring documentation.
-
-- Add precipitation.py module
-- Implement normalize_precipitation() function
-- Add tests/test_precipitation.py
-- Update CHANGELOG.md
-```
-
-### 4. Testing
-
-```bash
-# Ejecutar todas las pruebas
-pytest tests/ -v
-
-# Ejecutar con cobertura
-pytest tests/ --cov=itchi
-
-# Pruebas de un módulo específico
-pytest tests/test_precipitation.py -v
-```
-
-### 5. Enviar un Pull Request
-
-```bash
-# Asegúrate de que tu código está actualizado
-git fetch origin
-git rebase origin/main
-
-# Push tu rama
-git push origin feature/nombre-de-tu-feature
-```
-
-Después, abre un PR en GitHub con:
-- Título descriptivo
-- Referencia a cualquier issue relacionado
-- Descripción clara de los cambios
-- Checklist de verificación completado
-
-### Directrices de revisión
-
-- Al menos 1 revisión requerida
-- Todas las pruebas deben pasar
-- Cobertura de código no debe disminuir
-- Documentación debe estar actualizada
-
-### Reportar issues
-
-Usa la plantilla de issue de GitHub e incluye:
-- Descripción clara del problema
-- Pasos para reproducirlo
-- Comportamiento esperado vs. actual
-- Versión de Python y dependencias
 
 ---
 
-## 15. Autoría
+## Autoría
 
-[Adolfo Perez-Estrada](https://github.com/apereze)
+**Adolfo Perez-Estrada**
 
 Universidad Nacional Autónoma de México (UNAM)
-Instituto de Ciencias de la Atmosfera y Cambio Climático (ICACC)
+Instituto de Ciencias de la Atmósfera y Cambio Climático (ICACC)
 
 ---
 
-## 16. Licencia
+## Licencia
 
 Licencia por definir.
 
@@ -649,18 +678,19 @@ Para más detalles sobre licencias de software científico, ver [choosealicense.
 
 ### Key Resources
 
-- **IBTrACS**: [International Best Track Archive for Climate Stewardship](https://www.ncei.noaa.gov/products/international-best-track-archive)
-- **MSWEP**: [Multi-Source Weighted-Ensemble Precipitation](http://www.gloh2o.org/)
-- **ROCLOUD**: [A database for the outer sizes of tropical cyclones over the Middle Americas](https://data.mendeley.com/drafts/5bpzbwhynd)
+- **IBTrACS**: International Best Track Archive for Climate Stewardship.
+- **MSWEP**: Multi-Source Weighted-Ensemble Precipitation.
+- **ROCLOUD**: Database for the outer sizes of tropical cyclones over the Middle Americas.
 
 ### Related Documentation
 
 - [Project Architecture](docs/architecture.md)
-- [Methodology Details](docs/methodology.md) *(pending)*
-- [API Reference](docs/api.md) *(pending)*
+- [Examples](examples/)
+- [Synthetic smoke test notebook](notebooks/00_smoke_test_synthetic.ipynb)
 
 ### Scientific References
-- Perez-Estrada & Dominguez (2025): A database for the outer sizes of tropical cyclones over the Middle Americas
-- Pérez-Alarcon et al (2021): Comparative climatology of outer tropical cyclone size using radial wind profiles
-- Knapp et al. (2010): The International Best Track Archive for Climate Stewardship (IBTrACS)
-- Beck et al. (2019): MSWEP V2 Global 3-hourly 0.1° Precipitation
+
+- Pérez-Estrada & Dominguez (2025): A database for the outer sizes of tropical cyclones over the Middle Americas.
+- Pérez-Alarcón et al. (2021): Comparative climatology of outer tropical cyclone size using radial wind profiles.
+- Knapp et al. (2010): The International Best Track Archive for Climate Stewardship (IBTrACS).
+- Beck et al. (2019): MSWEP V2 global 3-hourly 0.1° precipitation.
