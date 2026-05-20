@@ -4,17 +4,16 @@ Tests for plotting helper utilities.
 
 from __future__ import annotations
 
-import numpy as np
-import xarray as xr
 import matplotlib.colors as mcolors
+import numpy as np
 import pytest
+import xarray as xr
 
 from itchi.plotting import (
     SIAT_DANGER_BOUNDS,
     SIAT_DANGER_COLORS,
     MapStyle,
     classify_itchi_to_siat_levels,
-    crear_colormap,
     create_segmented_colormap,
     get_crameri_colormap,
     get_default_itchi_colormap,
@@ -52,23 +51,6 @@ def test_create_segmented_colormap() -> None:
 
     assert isinstance(cmap, mcolors.LinearSegmentedColormap)
     assert cmap.name == "TestMap"
-
-
-def test_crear_colormap_alias() -> None:
-    """
-    Test backward-compatible Spanish colormap alias.
-    """
-    cmap = crear_colormap(
-        [
-            (0.0, 0.0, 1.0),
-            0.5,
-            (1.0, 1.0, 1.0),
-            0.8,
-            (1.0, 0.0, 0.0),
-        ]
-    )
-
-    assert isinstance(cmap, mcolors.LinearSegmentedColormap)
 
 
 def test_create_segmented_colormap_rejects_invalid_sequence() -> None:
