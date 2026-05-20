@@ -16,7 +16,9 @@ from itchi.rocloud import (
     has_any_rocloud_radius,
     has_complete_rocloud_radii,
     read_rocloud_table,
+    rocloud_text_to_dataframe,
     standardize_rocloud_dataframe,
+    standardize_rocloud_text_dataframe,
     validate_rocloud_columns,
 )
 
@@ -267,11 +269,148 @@ def test_read_rocloud_table_csv(tmp_path: Path) -> None:
     ]
 
 
+def test_read_rocloud_table_dat_assigns_operational_columns(
+    tmp_path: Path,
+) -> None:
+    """
+    Test reading the operational 17-column ROCLOUD .dat format.
+    """
+    path = tmp_path / "EP880.dat"
+    path.write_text(
+        (
+            "9\t8\t2013\t6\t11.0\t-116.2\t37.0\t1008\t"
+            "626.05\t542.21\t679.67\t713.31\t640.31\t"
+            "0.24\t0.51\t0.31\tCP032013\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = read_rocloud_table(path)
+
+    assert list(result.columns) == [
+        "dd",
+        "mm",
+        "yy",
+        "hh",
+        "lat",
+        "lon",
+        "mws",
+        "cpsl",
+        "rne",
+        "rno",
+        "rso",
+        "rse",
+        "rp",
+        "a",
+        "d",
+        "s",
+        "ct",
+    ]
+    assert result.loc[0, "ct"] == "CP032013"
+
+
+def test_rocloud_text_to_dataframe_maps_cardinal_quadrants(
+    tmp_path: Path,
+) -> None:
+    """
+    Test mapping from RNE/RNO/RSO/RSE to ITCHI canonical ROCLOUD columns.
+    """
+    path = tmp_path / "EP880.dat"
+    path.write_text(
+        (
+            "9\t8\t2013\t6\t11.0\t-116.2\t37.0\t1008\t"
+            "626.05\t542.21\t679.67\t713.31\t640.31\t"
+            "0.24\t0.51\t0.31\tCP032013\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = rocloud_text_to_dataframe(path)
+
+    assert result.loc[0, "storm_id"] == "CP032013"
+    assert result.loc[0, "time"] == pd.Timestamp("2013-08-09 06:00")
+    assert result.loc[0, "rocloud_rne"] == pytest.approx(626.05)
+    assert result.loc[0, "rocloud_rnw"] == pytest.approx(542.21)
+    assert result.loc[0, "rocloud_rsw"] == pytest.approx(679.67)
+    assert result.loc[0, "rocloud_rse"] == pytest.approx(713.31)
+    assert result.loc[0, "vmax_kt"] == pytest.approx(37.0)
+    assert result.loc[0, "pmin_hpa"] == pytest.approx(1008.0)
+
+
+def test_rocloud_text_to_dataframe_handles_hhmm_hours(
+    tmp_path: Path,
+) -> None:
+    """
+    Test parsing of compact HHMM values such as 0600.
+    """
+    path = tmp_path / "rocloud.txt"
+    path.write_text(
+        (
+            "9 8 2013 0600 11.0 -116.2 37.0 1008 "
+            "626.05 542.21 679.67 713.31 640.31 "
+            "0.24 0.51 0.31 CP032013\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = rocloud_text_to_dataframe(path)
+
+    assert result.loc[0, "time"] == pd.Timestamp("2013-08-09 06:00")
+
+
+def test_standardize_rocloud_text_dataframe_replaces_missing_values(
+    tmp_path: Path,
+) -> None:
+    """
+    Test conversion of -9999 missing values into NaN.
+    """
+    path = tmp_path / "NA880.dat"
+    path.write_text(
+        (
+            "7\t6\t2000\t18\t21.0\t-93.0\t46.25\t1008\t"
+            "685.02\t-9999\t892.42\t868.72\t749.96\t"
+            "0.38\t0.41\t0.13\tAL012000\n"
+        ),
+        encoding="utf-8",
+    )
+
+    raw = read_rocloud_table(path)
+    result = standardize_rocloud_text_dataframe(raw)
+
+    assert pd.isna(result.loc[0, "rocloud_rnw"])
+    assert result.loc[0, "rocloud_rne"] == pytest.approx(685.02)
+
+
+def test_rocloud_text_to_dataframe_can_filter_synoptic_records(
+    tmp_path: Path,
+) -> None:
+    """
+    Test optional filtering to 00, 06, 12 and 18 UTC.
+    """
+    path = tmp_path / "NA880.dat"
+    path.write_text(
+        (
+            "5\t6\t2001\t18\t28.5\t-95.3\t92.5\t1002\t"
+            "756.06\t185.62\t458.08\t880.89\t570.16\t"
+            "0.79\t0.44\t0.38\tAL012001\n"
+            "5\t6\t2001\t21\t28.9\t-95.3\t83.25\t1003\t"
+            "799.08\t405.27\t831.07\t1002.29\t759.43\t"
+            "0.60\t0.49\t0.23\tAL012001\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = rocloud_text_to_dataframe(path, synoptic_only=True)
+
+    assert len(result) == 1
+    assert result.loc[0, "time"] == pd.Timestamp("2001-06-05 18:00")
+
+
 def test_read_rocloud_table_rejects_unknown_extension(tmp_path: Path) -> None:
     """
     Test unsupported ROCLOUD table format.
     """
-    path = tmp_path / "rocloud.txt"
+    path = tmp_path / "rocloud.json"
     path.write_text("test", encoding="utf-8")
 
     with pytest.raises(ValueError):
