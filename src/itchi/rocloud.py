@@ -28,6 +28,7 @@ from typing import Any
 
 import pandas as pd
 
+from itchi.constants import SYNOPTIC_HOURS_UTC
 from itchi.radii import ResolvedRadii, resolve_attribution_radius
 from itchi.units import normalize_quadrant_key
 
@@ -42,16 +43,63 @@ DEFAULT_ROCLOUD_COLUMN_MAP: dict[str, str] = {
 }
 
 
+ROCLOUD_TEXT_COLUMNS: tuple[str, ...] = (
+    "dd",
+    "mm",
+    "yy",
+    "hh",
+    "lat",
+    "lon",
+    "mws",
+    "cpsl",
+    "rne",
+    "rno",
+    "rso",
+    "rse",
+    "rp",
+    "a",
+    "d",
+    "s",
+    "ct",
+)
+
+ROCLOUD_TEXT_NUMERIC_COLUMNS: tuple[str, ...] = tuple(
+    column for column in ROCLOUD_TEXT_COLUMNS if column != "ct"
+)
+
+ROCLOUD_TEXT_EXTENSIONS: tuple[str, ...] = (".dat", ".txt", ".dot")
+
+ROCLOUD_TEXT_CANONICAL_RENAME_MAP: dict[str, str] = {
+    "ct": "storm_id",
+    "mws": "vmax_kt",
+    "cpsl": "pmin_hpa",
+    "rne": "rocloud_rne",
+    "rno": "rocloud_rnw",
+    "rso": "rocloud_rsw",
+    "rse": "rocloud_rse",
+    "rp": "rocloud_mean_km",
+    "a": "asymmetry",
+    "d": "dispersion",
+    "s": "solidity",
+}
+
+
 def read_rocloud_table(path: str | Path, **kwargs: Any) -> pd.DataFrame:
     """
-    Read a ROCLOUD table from CSV or Parquet.
+    Read a ROCLOUD table from CSV, Parquet or ROCLOUD text format.
+
+    ROCLOUD text files are expected to follow the 17-column format used by
+    ``NA880.dat`` and ``EP880.dat``:
+
+    ``dd mm yy hh lat lon MWS CPSL RNE RNO RSO RSE Rp A D S CT``
 
     Parameters
     ----------
     path : str or pathlib.Path
         Input ROCLOUD table path.
     **kwargs : Any
-        Additional keyword arguments passed to pandas.
+        Additional keyword arguments passed to pandas. For text files,
+        keyword arguments are passed to :func:`read_rocloud_text_table`.
 
     Returns
     -------
@@ -78,7 +126,239 @@ def read_rocloud_table(path: str | Path, **kwargs: Any) -> pd.DataFrame:
     if suffix == ".parquet":
         return pd.read_parquet(input_path, **kwargs)
 
-    raise ValueError("Unsupported ROCLOUD table format. Expected .csv or .parquet.")
+    if suffix in ROCLOUD_TEXT_EXTENSIONS:
+        return read_rocloud_text_table(input_path, **kwargs)
+
+    raise ValueError(
+        "Unsupported ROCLOUD table format. Expected .csv, .parquet, "
+        ".dat, .txt or .dot."
+    )
+
+
+def read_rocloud_text_table(
+    path: str | Path,
+    names: Sequence[str] = ROCLOUD_TEXT_COLUMNS,
+    missing_values: Sequence[float | int] = (-9999,),
+    **kwargs: Any,
+) -> pd.DataFrame:
+    """
+    Read a ROCLOUD text file without header.
+
+    The operational ROCLOUD files used by ITCHI contain tabulated records
+    without column names. The expected default columns are:
+
+    ``dd mm yy hh lat lon MWS CPSL RNE RNO RSO RSE Rp A D S CT``
+
+    where ``RNO`` is the northwestern quadrant and ``RSO`` is the
+    southwestern quadrant.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Input ROCLOUD text file.
+    names : sequence of str, default=ROCLOUD_TEXT_COLUMNS
+        Column names assigned to the input file.
+    missing_values : sequence of int or float, default=(-9999,)
+        Values used to denote missing data.
+    **kwargs : Any
+        Additional keyword arguments passed to :func:`pandas.read_table`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Raw ROCLOUD text table with standardized lowercase column names.
+    """
+    input_path = Path(path)
+
+    read_kwargs: dict[str, Any] = {
+        "names": list(names),
+        "index_col": False,
+        "sep": r"\s+",
+        "engine": "python",
+    }
+    read_kwargs.update(kwargs)
+
+    result = pd.read_table(input_path, **read_kwargs)
+    result = standardize_column_names(result)
+
+    numeric_columns = [
+        column
+        for column in ROCLOUD_TEXT_NUMERIC_COLUMNS
+        if column in result.columns
+    ]
+
+    for column in numeric_columns:
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+
+    if missing_values:
+        for column in numeric_columns:
+            result[column] = result[column].mask(
+                result[column].isin(missing_values),
+                other=pd.NA,
+            )
+
+    if "ct" in result.columns:
+        result["ct"] = result["ct"].astype(str).str.strip()
+
+    return result
+
+
+def _build_rocloud_text_time(
+    df: pd.DataFrame,
+    day_col: str = "dd",
+    month_col: str = "mm",
+    year_col: str = "yy",
+    hour_col: str = "hh",
+) -> pd.Series:
+    """
+    Build a datetime Series from ROCLOUD text date and hour columns.
+
+    The hour column accepts both integer hours, for example ``6`` and ``18``,
+    and compact HHMM values, for example ``0600`` and ``1800``.
+    """
+    for column in (day_col, month_col, year_col, hour_col):
+        if column not in df.columns:
+            raise KeyError(f"Missing ROCLOUD text date/time column: {column}")
+
+    year = pd.to_numeric(df[year_col], errors="raise").astype(int)
+    month = pd.to_numeric(df[month_col], errors="raise").astype(int)
+    day = pd.to_numeric(df[day_col], errors="raise").astype(int)
+    hour_raw = pd.to_numeric(df[hour_col], errors="raise").astype(int)
+
+    hour = hour_raw.where(hour_raw < 100, hour_raw // 100)
+    minute = pd.Series(0, index=df.index).where(hour_raw < 100, hour_raw % 100)
+
+    invalid_time = (
+        (hour < 0)
+        | (hour > 23)
+        | (minute < 0)
+        | (minute > 59)
+    )
+
+    if bool(invalid_time.any()):
+        raise ValueError("Invalid ROCLOUD hour/minute values were found.")
+
+    date = pd.to_datetime(
+        {
+            "year": year,
+            "month": month,
+            "day": day,
+        },
+        errors="raise",
+    )
+
+    return date + pd.to_timedelta(hour, unit="h") + pd.to_timedelta(
+        minute,
+        unit="m",
+    )
+
+
+def rocloud_text_to_dataframe(
+    path: str | Path,
+    names: Sequence[str] = ROCLOUD_TEXT_COLUMNS,
+    missing_values: Sequence[float | int] = (-9999,),
+    synoptic_only: bool = False,
+    sort: bool = True,
+    **kwargs: Any,
+) -> pd.DataFrame:
+    """
+    Read and standardize a ROCLOUD text file for ITCHI.
+
+    The output follows the internal ROCLOUD contract:
+
+    - ``storm_id``
+    - ``time``
+    - ``rocloud_rne``
+    - ``rocloud_rse``
+    - ``rocloud_rsw``
+    - ``rocloud_rnw``
+
+    Additional metadata columns are preserved when present, including
+    cyclone center coordinates, maximum wind, central pressure, mean
+    ROCLOUD radius and shape metrics.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Input ROCLOUD text file.
+    names : sequence of str, default=ROCLOUD_TEXT_COLUMNS
+        Column names assigned to the input file.
+    missing_values : sequence of int or float, default=(-9999,)
+        Values used to denote missing data.
+    synoptic_only : bool, default=False
+        If True, keep only 00, 06, 12 and 18 UTC records.
+    sort : bool, default=True
+        Whether to sort by storm_id and time.
+    **kwargs : Any
+        Additional keyword arguments passed to :func:`read_rocloud_text_table`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Standardized ROCLOUD DataFrame.
+    """
+    raw = read_rocloud_text_table(
+        path=path,
+        names=names,
+        missing_values=missing_values,
+        **kwargs,
+    )
+
+    return standardize_rocloud_text_dataframe(
+        raw,
+        synoptic_only=synoptic_only,
+        sort=sort,
+    )
+
+
+def standardize_rocloud_text_dataframe(
+    df: pd.DataFrame,
+    synoptic_only: bool = False,
+    sort: bool = True,
+) -> pd.DataFrame:
+    """
+    Standardize a raw ROCLOUD 17-column text DataFrame.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Raw ROCLOUD text DataFrame with columns equivalent to
+        ``ROCLOUD_TEXT_COLUMNS``.
+    synoptic_only : bool, default=False
+        If True, keep only 00, 06, 12 and 18 UTC records.
+    sort : bool, default=True
+        Whether to sort by storm_id and time.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame standardized to the ITCHI ROCLOUD contract.
+    """
+    result = standardize_column_names(df)
+    missing = set(ROCLOUD_TEXT_COLUMNS).difference(result.columns)
+
+    if missing:
+        missing_text = ", ".join(sorted(missing))
+        raise KeyError(f"Missing ROCLOUD text column(s): {missing_text}")
+
+    result = result.copy()
+    result["time"] = _build_rocloud_text_time(result)
+
+    result = result.rename(columns=ROCLOUD_TEXT_CANONICAL_RENAME_MAP)
+
+    canonical = standardize_rocloud_dataframe(
+        result,
+        parse_time=True,
+        sort=sort,
+    )
+
+    if synoptic_only:
+        canonical = canonical.loc[
+            canonical["time"].dt.hour.isin(SYNOPTIC_HOURS_UTC)
+            & canonical["time"].dt.minute.eq(0)
+        ].reset_index(drop=True)
+
+    return canonical
 
 
 def standardize_column_names(df: pd.DataFrame) -> pd.DataFrame:
