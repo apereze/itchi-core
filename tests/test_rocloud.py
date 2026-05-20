@@ -15,11 +15,14 @@ from itchi.rocloud import (
     get_rocloud_snapshot,
     has_any_rocloud_radius,
     has_complete_rocloud_radii,
+    is_rocloud_database_text_file,
+    read_rocloud_database_text_table,
     read_rocloud_table,
     rocloud_text_to_dataframe,
     standardize_rocloud_dataframe,
     standardize_rocloud_text_dataframe,
     validate_rocloud_columns,
+    validate_rocloud_database_record_counts,
 )
 
 
@@ -404,6 +407,159 @@ def test_rocloud_text_to_dataframe_can_filter_synoptic_records(
 
     assert len(result) == 1
     assert result.loc[0, "time"] == pd.Timestamp("2001-06-05 18:00")
+
+
+def test_detects_rocloud_database_text_file(tmp_path: Path) -> None:
+    """
+    Test detection of database files with storm header lines.
+    """
+    path = tmp_path / "EP_TCSize_2000_2024.dat"
+    path.write_text(
+        (
+            "EP022000,                BUD,     2,\n"
+            "20000613  1200   13.9 -106.6  64  1000   "
+            "1062.89 545.64 862.23 825.34 824.03  "
+            "0.49  0.18  0.34   1111.07 1074.93 865.39 959.66 1002.76\n"
+        ),
+        encoding="utf-8",
+    )
+
+    assert is_rocloud_database_text_file(path)
+
+
+def test_read_rocloud_database_text_table_preserves_header_metadata(
+    tmp_path: Path,
+) -> None:
+    """
+    Test expanded database reading with storm name and declared count.
+    """
+    path = tmp_path / "EP_TCSize_2000_2024.dat"
+    path.write_text(
+        (
+            "EP022000,                BUD,     2,\n"
+            "20000613  1200   13.9 -106.6  64  1000   "
+            "1062.89 545.64 862.23 825.34 824.03  "
+            "0.49  0.18  0.34   1111.07 1074.93 865.39 959.66 1002.76\n"
+            "20000613  1800   14.4 -107.4  74   999    "
+            "893.30 633.68 944.97 800.73 818.17  "
+            "0.33  0.38  0.38    853.13 402.21 1082.33 878.99 804.16\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = read_rocloud_database_text_table(path)
+
+    assert len(result) == 2
+    assert result.loc[0, "storm_id"] == "EP022000"
+    assert result.loc[0, "storm_name"] == "BUD"
+    assert result.loc[0, "declared_entries"] == 2
+    assert result.loc[1, "record_number"] == 2
+
+
+def test_rocloud_database_text_to_dataframe_maps_header_and_rbp(
+    tmp_path: Path,
+) -> None:
+    """
+    Test standardization of database block format into ITCHI columns.
+    """
+    path = tmp_path / "EP_TCSize_2000_2024.dat"
+    path.write_text(
+        (
+            "EP022000,                BUD,     1,\n"
+            "20000613  1200   13.9 -106.6  64  1000   "
+            "1062.89 545.64 862.23 825.34 824.03  "
+            "0.49  0.18  0.34   1111.07 1074.93 865.39 959.66 1002.76\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = rocloud_text_to_dataframe(path)
+
+    assert result.loc[0, "storm_id"] == "EP022000"
+    assert result.loc[0, "storm_name"] == "BUD"
+    assert result.loc[0, "time"] == pd.Timestamp("2000-06-13 12:00")
+    assert result.loc[0, "rocloud_rne"] == pytest.approx(1062.89)
+    assert result.loc[0, "rocloud_rnw"] == pytest.approx(545.64)
+    assert result.loc[0, "rocloud_rsw"] == pytest.approx(862.23)
+    assert result.loc[0, "rocloud_rse"] == pytest.approx(825.34)
+    assert result.loc[0, "rbp_rne"] == pytest.approx(1111.07)
+    assert result.loc[0, "rbp_rnw"] == pytest.approx(1074.93)
+    assert result.loc[0, "rbp_rsw"] == pytest.approx(865.39)
+    assert result.loc[0, "rbp_rse"] == pytest.approx(959.66)
+
+
+def test_rocloud_database_missing_values_are_preserved_as_nan(
+    tmp_path: Path,
+) -> None:
+    """
+    Test missing-value handling in database block records.
+    """
+    path = tmp_path / "NA_TCSize_2000_2024.dat"
+    path.write_text(
+        (
+            "AL012000,            UNNAMED,      1,\n"
+            "20000607  1800   21.0  -93.0  46  1008    "
+            "685.02 553.70 892.42 868.72 749.96  "
+            "0.38  0.41  0.13    -9999.00 -9999.00 -9999.00 -9999.00 -9999.00\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = rocloud_text_to_dataframe(path)
+
+    assert pd.isna(result.loc[0, "rbp_rne"])
+    assert pd.isna(result.loc[0, "rbp_mean"])
+    assert result.loc[0, "rocloud_rne"] == pytest.approx(685.02)
+
+
+def test_rocloud_database_record_count_validation(tmp_path: Path) -> None:
+    """
+    Test optional strict validation of declared record counts.
+    """
+    path = tmp_path / "NA_TCSize_2000_2024.dat"
+    path.write_text(
+        (
+            "AL012000,            UNNAMED,      2,\n"
+            "20000607  1800   21.0  -93.0  46  1008    "
+            "685.02 553.70 892.42 868.72 749.96  "
+            "0.38  0.41  0.13    262.10 0.00 925.46 716.01 634.52\n"
+        ),
+        encoding="utf-8",
+    )
+
+    raw = read_rocloud_database_text_table(path)
+
+    with pytest.raises(ValueError):
+        validate_rocloud_database_record_counts(raw)
+
+    with pytest.raises(ValueError):
+        read_rocloud_database_text_table(path, validate_record_counts=True)
+
+
+def test_rocloud_database_text_to_dataframe_can_filter_synoptic_records(
+    tmp_path: Path,
+) -> None:
+    """
+    Test synoptic filtering in database block format.
+    """
+    path = tmp_path / "EP_TCSize_2000_2024.dat"
+    path.write_text(
+        (
+            "EP022000,                BUD,     2,\n"
+            "20000613  1200   13.9 -106.6  64  1000   "
+            "1062.89 545.64 862.23 825.34 824.03  "
+            "0.49  0.18  0.34   1111.07 1074.93 865.39 959.66 1002.76\n"
+            "20000613  2100   14.4 -107.4  74   999    "
+            "893.30 633.68 944.97 800.73 818.17  "
+            "0.33  0.38  0.38    853.13 402.21 1082.33 878.99 804.16\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = rocloud_text_to_dataframe(path, synoptic_only=True)
+
+    assert len(result) == 1
+    assert result.loc[0, "time"] == pd.Timestamp("2000-06-13 12:00")
 
 
 def test_read_rocloud_table_rejects_unknown_extension(tmp_path: Path) -> None:
