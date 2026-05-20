@@ -58,3 +58,52 @@ Si modifica archivos:
 git add .
 pre-commit run --all-files
 ```
+## Read compiled event
+
+After exporting the synthetic compiled event:
+
+```python
+python examples/smoke_test_synthetic.py \
+  --output-path outputs/events/smoke_test_synthetic.nc
+````
+validate and inspect the file with:
+
+```python
+python examples/read_compiled_event.py \
+  --input-path outputs/events/smoke_test_synthetic.nc
+````
+
+To generate a diagnostic figure:
+
+````bash
+  python examples/read_compiled_event.py \
+  --input-path outputs/events/smoke_test_synthetic.nc \
+  --plot \
+  --figure-path outputs/figures/read_compiled_event.png
+````
+
+This example verifies that the exported event can be consumed without recomputing ITCHI.
+
+
+# Ejecutar pruebas
+
+```bash
+python -m pytest tests/test_io.py
+python -m pytest tests/test_compiler.py
+python -m pytest tests/
+````
+
+Luego:
+
+````bash
+pre-commit run --all-files
+````
+
+Y prueba manual:
+````
+python examples/smoke_test_synthetic.py \
+  --output-path outputs/events/smoke_test_synthetic.nc
+
+python examples/read_compiled_event.py \
+  --input-path outputs/events/smoke_test_synthetic.nc
+````
