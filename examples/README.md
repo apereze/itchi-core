@@ -1,26 +1,53 @@
-# ITCHI examples
+# ITCHI examples usage
 
-This directory contains executable examples for validating and demonstrating
-the `itchi-core` workflow.
+This file documents the executable examples available in `itchi-core`.
 
-## Synthetic smoke test
+Run all commands from the repository root.
+
+```bash
+cd itchi-core
+```
+
+Generated outputs should be written under `outputs/`, which is ignored by Git.
+
+Recommended structure:
+
+```text
+outputs/events/
+outputs/figures/
+outputs/notebooks/
+```
+
+---
+
+## Available scripts
+
+| Script | Purpose |
+|---|---|
+| `smoke_test_synthetic.py` | Direct synthetic end-to-end ITCHI calculation. |
+| `smoke_test_from_tables.py` | Table-driven workflow using synthetic track and ROCLOUD tables. |
+| `read_compiled_event.py` | Read and validate an exported compiled event. |
+
+---
+
+## Direct synthetic smoke test
+
+`smoke_test_synthetic.py` validates the end-to-end ITCHI workflow using synthetic data and manually constructed snapshot inputs.
 
 Run:
 
 ```bash
 python examples/smoke_test_synthetic.py
-````
+```
 
-This example validates the end-to-end synthetic workflow:
+Export a compiled event:
 
-1. create a synthetic lon/lat grid;
-2. create two synthetic precipitation snapshots;
-3. compute ITCHI for each snapshot;
-4. compile the event;
-5. compute `ITCHI_max` and `ITCHI_acc`;
-6. print metadata and numerical checks.
+```bash
+python examples/smoke_test_synthetic.py \
+  --output-path outputs/events/smoke_test_synthetic.nc
+```
 
-To generate a diagnostic figure:
+Generate a diagnostic figure:
 
 ```bash
 python examples/smoke_test_synthetic.py \
@@ -28,82 +55,128 @@ python examples/smoke_test_synthetic.py \
   --figure-path outputs/figures/smoke_test_synthetic.png
 ```
 
-The `outputs/` directory is ignored by Git.
+Export and plot:
 
-````
+```bash
+python examples/smoke_test_synthetic.py \
+  --plot \
+  --figure-path outputs/figures/smoke_test_synthetic.png \
+  --output-path outputs/events/smoke_test_synthetic.nc
+```
 
 ---
 
-# Paso 33.3 — Probar todo
+## Table-driven synthetic smoke test
+
+`smoke_test_from_tables.py` validates the workflow that builds ITCHI snapshot inputs from synthetic track and ROCLOUD tables.
+
+This is closer to the expected real-data workflow because it uses:
+
+- a precipitation object with `valid_time`;
+- a standardized track table;
+- a standardized ROCLOUD table;
+- `build_event_snapshot_inputs_from_tables`;
+- `compile_itchi_event`;
+- `write_compiled_event`.
+
+Run:
 
 ```bash
-python -m pytest tests/
-````
-
-Luego:
-
-```bash
-python examples/smoke_test_synthetic.py
+python examples/smoke_test_from_tables.py
 ```
 
-Después:
+Export a compiled event:
 
 ```bash
-pre-commit run --all-files
+python examples/smoke_test_from_tables.py \
+  --output-path outputs/events/smoke_test_from_tables.nc
 ```
 
-Si modifica archivos:
+Export and plot:
 
 ```bash
-git add .
-pre-commit run --all-files
+python examples/smoke_test_from_tables.py \
+  --output-path outputs/events/smoke_test_from_tables.nc \
+  --plot \
+  --figure-path outputs/figures/smoke_test_from_tables.png
 ```
+
+---
+
 ## Read compiled event
 
-After exporting the synthetic compiled event:
+`read_compiled_event.py` validates that an exported compiled event can be consumed without recomputing ITCHI.
 
-```python
-python examples/smoke_test_synthetic.py \
-  --output-path outputs/events/smoke_test_synthetic.nc
-````
-validate and inspect the file with:
-
-```python
-python examples/read_compiled_event.py \
-  --input-path outputs/events/smoke_test_synthetic.nc
-````
-
-To generate a diagnostic figure:
-
-````bash
-  python examples/read_compiled_event.py \
-  --input-path outputs/events/smoke_test_synthetic.nc \
-  --plot \
-  --figure-path outputs/figures/read_compiled_event.png
-````
-
-This example verifies that the exported event can be consumed without recomputing ITCHI.
-
-
-# Ejecutar pruebas
+Read the direct synthetic workflow output:
 
 ```bash
-python -m pytest tests/test_io.py
-python -m pytest tests/test_compiler.py
-python -m pytest tests/
-````
+python examples/read_compiled_event.py \
+  --input-path outputs/events/smoke_test_synthetic.nc
+```
 
-Luego:
+Read the table-driven workflow output:
 
-````bash
-pre-commit run --all-files
-````
+```bash
+python examples/read_compiled_event.py \
+  --input-path outputs/events/smoke_test_from_tables.nc
+```
 
-Y prueba manual:
-````
+Read and plot:
+
+```bash
+python examples/read_compiled_event.py \
+  --input-path outputs/events/smoke_test_from_tables.nc \
+  --plot \
+  --figure-path outputs/figures/read_compiled_event.png
+```
+
+The reader checks that required variables exist, that `ITCHI`, `ITCHI_max` and `ITCHI_acc` remain bounded in `[0, 1]`, and that event-level products do not retain the time dimension.
+
+---
+
+## Recommended validation sequence
+
+```bash
 python examples/smoke_test_synthetic.py \
   --output-path outputs/events/smoke_test_synthetic.nc
 
 python examples/read_compiled_event.py \
   --input-path outputs/events/smoke_test_synthetic.nc
-````
+
+python examples/smoke_test_from_tables.py \
+  --output-path outputs/events/smoke_test_from_tables.nc
+
+python examples/read_compiled_event.py \
+  --input-path outputs/events/smoke_test_from_tables.nc
+
+python -m pytest tests/
+pre-commit run --all-files
+```
+
+---
+
+## Expected compiled-event variables
+
+A compiled event exported by the examples should include variables such as:
+
+```text
+ITCHI(time, y, x)
+H_P(time, y, x)
+H_W(time, y, x)
+H_dir(time, y, x)
+H_ind(time, y, x)
+ITCHI_max(y, x)
+ITCHI_acc(y, x)
+```
+
+The exact set of variables depends on the snapshot variables included during event compilation.
+
+---
+
+## Notes
+
+These examples are synthetic. They validate computational structure, data flow, export mechanics and product consumption. They do not yet represent a fully real-data operational ITCHI product.
+
+For the full reproducible workflow guide, see `docs/workflows.md`.
+
+For input and output requirements, see `docs/data_contracts.md`.
