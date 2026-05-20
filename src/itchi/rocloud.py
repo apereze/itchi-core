@@ -63,9 +63,35 @@ ROCLOUD_TEXT_COLUMNS: tuple[str, ...] = (
     "ct",
 )
 
+ROCLOUD_DATABASE_RECORD_COLUMNS: tuple[str, ...] = (
+    "date",
+    "hh",
+    "lat",
+    "lon",
+    "mws",
+    "cpsl",
+    "rne",
+    "rno",
+    "rso",
+    "rse",
+    "rp",
+    "a",
+    "d",
+    "s",
+    "rbp_rne",
+    "rbp_rno",
+    "rbp_rso",
+    "rbp_rse",
+    "rbp_mean",
+)
+
 ROCLOUD_TEXT_NUMERIC_COLUMNS: tuple[str, ...] = tuple(
     column for column in ROCLOUD_TEXT_COLUMNS if column != "ct"
 )
+
+ROCLOUD_DATABASE_NUMERIC_COLUMNS: tuple[str, ...] = tuple(
+    column for column in ROCLOUD_DATABASE_RECORD_COLUMNS if column != "date"
+) + ("declared_entries", "record_number")
 
 ROCLOUD_TEXT_EXTENSIONS: tuple[str, ...] = (".dat", ".txt", ".dot")
 
@@ -83,15 +109,56 @@ ROCLOUD_TEXT_CANONICAL_RENAME_MAP: dict[str, str] = {
     "s": "solidity",
 }
 
+ROCLOUD_DATABASE_CANONICAL_RENAME_MAP: dict[str, str] = {
+    "mws": "vmax_kt",
+    "cpsl": "pmin_hpa",
+    "rne": "rocloud_rne",
+    "rno": "rocloud_rnw",
+    "rso": "rocloud_rsw",
+    "rse": "rocloud_rse",
+    "rp": "rocloud_mean_km",
+    "a": "asymmetry",
+    "d": "dispersion",
+    "s": "solidity",
+    "rbp_rno": "rbp_rnw",
+    "rbp_rso": "rbp_rsw",
+}
+
+ROCLOUD_STANDARD_NUMERIC_COLUMNS: tuple[str, ...] = (
+    "lat",
+    "lon",
+    "vmax_kt",
+    "pmin_hpa",
+    "rocloud_rne",
+    "rocloud_rnw",
+    "rocloud_rsw",
+    "rocloud_rse",
+    "rocloud_mean_km",
+    "asymmetry",
+    "dispersion",
+    "solidity",
+    "rbp_rne",
+    "rbp_rnw",
+    "rbp_rsw",
+    "rbp_rse",
+    "rbp_mean",
+    "declared_entries",
+    "record_number",
+)
+
 
 def read_rocloud_table(path: str | Path, **kwargs: Any) -> pd.DataFrame:
     """
     Read a ROCLOUD table from CSV, Parquet or ROCLOUD text format.
 
-    ROCLOUD text files are expected to follow the 17-column format used by
-    ``NA880.dat`` and ``EP880.dat``:
+    Supported text formats are:
 
-    ``dd mm yy hh lat lon MWS CPSL RNE RNO RSO RSE Rp A D S CT``
+    1. Flat 17-column files:
+       ``dd mm yy hh lat lon MWS CPSL RNE RNO RSO RSE Rp A D S CT``
+
+    2. Database block files with storm headers:
+       ``storm_id, storm_name, declared_entries,`` followed by records with
+       ``date hh lat lon MWS CPSL RNE RNO RSO RSE Rp A D S RBP...``.
 
     Parameters
     ----------
@@ -139,29 +206,30 @@ def read_rocloud_text_table(
     path: str | Path,
     names: Sequence[str] = ROCLOUD_TEXT_COLUMNS,
     missing_values: Sequence[float | int] = (-9999,),
+    validate_record_counts: bool = False,
     **kwargs: Any,
 ) -> pd.DataFrame:
     """
-    Read a ROCLOUD text file without header.
+    Read a ROCLOUD text file.
 
-    The operational ROCLOUD files used by ITCHI contain tabulated records
-    without column names. The expected default columns are:
-
-    ``dd mm yy hh lat lon MWS CPSL RNE RNO RSO RSE Rp A D S CT``
-
-    where ``RNO`` is the northwestern quadrant and ``RSO`` is the
-    southwestern quadrant.
+    The reader automatically detects whether the file is a flat table or a
+    database block file with one header per tropical cyclone.
 
     Parameters
     ----------
     path : str or pathlib.Path
         Input ROCLOUD text file.
     names : sequence of str, default=ROCLOUD_TEXT_COLUMNS
-        Column names assigned to the input file.
+        Column names assigned to flat 17-column input files.
     missing_values : sequence of int or float, default=(-9999,)
         Values used to denote missing data.
+    validate_record_counts : bool, default=False
+        If True, validate that each block has the declared number of records.
+        This is disabled by default because some released files may keep the
+        best-track declared count while only retaining available ROCLOUD rows.
     **kwargs : Any
-        Additional keyword arguments passed to :func:`pandas.read_table`.
+        Additional keyword arguments passed to :func:`pandas.read_table` for
+        flat files.
 
     Returns
     -------
@@ -169,6 +237,13 @@ def read_rocloud_text_table(
         Raw ROCLOUD text table with standardized lowercase column names.
     """
     input_path = Path(path)
+
+    if is_rocloud_database_text_file(input_path):
+        return read_rocloud_database_text_table(
+            input_path,
+            missing_values=missing_values,
+            validate_record_counts=validate_record_counts,
+        )
 
     read_kwargs: dict[str, Any] = {
         "names": list(names),
@@ -187,20 +262,258 @@ def read_rocloud_text_table(
         if column in result.columns
     ]
 
-    for column in numeric_columns:
-        result[column] = pd.to_numeric(result[column], errors="coerce")
-
-    if missing_values:
-        for column in numeric_columns:
-            result[column] = result[column].mask(
-                result[column].isin(missing_values),
-                other=pd.NA,
-            )
+    result = _coerce_numeric_columns(result, numeric_columns)
+    result = _replace_missing_numeric_values(result, numeric_columns, missing_values)
 
     if "ct" in result.columns:
         result["ct"] = result["ct"].astype(str).str.strip()
 
     return result
+
+
+def is_rocloud_database_text_file(path: str | Path) -> bool:
+    """
+    Return True if a ROCLOUD text file starts with a storm header line.
+    """
+    input_path = Path(path)
+
+    with input_path.open("r", encoding="utf-8", errors="replace") as file_obj:
+        for line in file_obj:
+            if not line.strip():
+                continue
+
+            return _parse_rocloud_database_header(line) is not None
+
+    return False
+
+
+def _parse_rocloud_database_header(line: str) -> dict[str, str | int] | None:
+    """
+    Parse a ROCLOUD database block header.
+
+    Expected header example:
+
+    ``EP132006, LANE, 17,``
+    """
+    if "," not in line:
+        return None
+
+    parts = [part.strip() for part in line.strip().split(",")]
+    parts = [part for part in parts if part != ""]
+
+    if len(parts) < 3:
+        return None
+
+    storm_id, storm_name, declared_entries = parts[:3]
+
+    if not storm_id:
+        return None
+
+    try:
+        declared_entries_int = int(declared_entries)
+    except ValueError:
+        return None
+
+    return {
+        "storm_id": storm_id,
+        "storm_name": storm_name,
+        "declared_entries": declared_entries_int,
+    }
+
+
+def read_rocloud_database_text_table(
+    path: str | Path,
+    missing_values: Sequence[float | int] = (-9999,),
+    validate_record_counts: bool = False,
+) -> pd.DataFrame:
+    """
+    Read the block-based ROCLOUD database text format.
+
+    The format contains one header per storm:
+
+    ``storm_id, storm_name, declared_entries,``
+
+    followed by records with 19 fields:
+
+    ``date hh lat lon MWS CPSL RNE RNO RSO RSE Rp A D S``
+    ``RBP_RNE RBP_RNO RBP_RSO RBP_RSE RBP_mean``
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Input ROCLOUD database text file.
+    missing_values : sequence of int or float, default=(-9999,)
+        Values used to denote missing data.
+    validate_record_counts : bool, default=False
+        If True, validate declared record counts by storm.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Expanded row-level table with storm metadata repeated per record.
+    """
+    input_path = Path(path)
+    records: list[dict[str, Any]] = []
+    current_storm: dict[str, str | int] | None = None
+    current_record_number = 0
+
+    with input_path.open("r", encoding="utf-8", errors="replace") as file_obj:
+        for line_number, line in enumerate(file_obj, start=1):
+            stripped = line.strip()
+
+            if not stripped:
+                continue
+
+            header = _parse_rocloud_database_header(stripped)
+
+            if header is not None:
+                current_storm = header
+                current_record_number = 0
+                continue
+
+            if current_storm is None:
+                raise ValueError(
+                    "ROCLOUD database record found before any storm header "
+                    f"at line {line_number}."
+                )
+
+            values = stripped.split()
+
+            if len(values) != len(ROCLOUD_DATABASE_RECORD_COLUMNS):
+                raise ValueError(
+                    "Invalid ROCLOUD database record length at line "
+                    f"{line_number}. Expected "
+                    f"{len(ROCLOUD_DATABASE_RECORD_COLUMNS)} fields, "
+                    f"got {len(values)}."
+                )
+
+            current_record_number += 1
+            record = dict(zip(ROCLOUD_DATABASE_RECORD_COLUMNS, values, strict=True))
+            record.update(current_storm)
+            record["record_number"] = current_record_number
+            records.append(record)
+
+    if not records:
+        raise ValueError(f"No ROCLOUD records were found in {input_path}.")
+
+    result = pd.DataFrame.from_records(records)
+    result = standardize_column_names(result)
+
+    numeric_columns = [
+        column
+        for column in ROCLOUD_DATABASE_NUMERIC_COLUMNS
+        if column in result.columns
+    ]
+
+    result = _coerce_numeric_columns(result, numeric_columns)
+    result = _replace_missing_numeric_values(result, numeric_columns, missing_values)
+
+    for column in ("storm_id", "storm_name", "date"):
+        if column in result.columns:
+            result[column] = result[column].astype(str).str.strip()
+
+    if validate_record_counts:
+        validate_rocloud_database_record_counts(result)
+
+    return result
+
+
+def validate_rocloud_database_record_counts(df: pd.DataFrame) -> None:
+    """
+    Validate database block record counts against declared header counts.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Expanded ROCLOUD database table.
+
+    Raises
+    ------
+    KeyError
+        If required metadata columns are missing.
+    ValueError
+        If any storm has a count mismatch.
+    """
+    required = {"storm_id", "declared_entries"}
+    missing = required.difference(df.columns)
+
+    if missing:
+        missing_text = ", ".join(sorted(missing))
+        raise KeyError(f"Missing record-count column(s): {missing_text}")
+
+    mismatches: list[str] = []
+
+    for storm_id, storm_df in df.groupby("storm_id", sort=False):
+        declared = int(storm_df["declared_entries"].iloc[0])
+        actual = int(len(storm_df))
+
+        if declared != actual:
+            mismatches.append(
+                f"{storm_id}: declared={declared}, parsed={actual}"
+            )
+
+    if mismatches:
+        mismatch_text = "; ".join(mismatches)
+        raise ValueError(f"ROCLOUD record-count mismatch: {mismatch_text}")
+
+
+def _coerce_numeric_columns(
+    df: pd.DataFrame,
+    columns: Sequence[str],
+) -> pd.DataFrame:
+    """
+    Convert selected columns to numeric values.
+    """
+    result = df.copy()
+
+    for column in columns:
+        if column in result.columns:
+            result[column] = pd.to_numeric(result[column], errors="coerce")
+
+    return result
+
+
+def _replace_missing_numeric_values(
+    df: pd.DataFrame,
+    columns: Sequence[str],
+    missing_values: Sequence[float | int],
+) -> pd.DataFrame:
+    """
+    Replace explicit numeric missing-value codes with pandas NA.
+    """
+    result = df.copy()
+
+    if not missing_values:
+        return result
+
+    for column in columns:
+        if column in result.columns:
+            result[column] = result[column].mask(
+                result[column].isin(missing_values),
+                other=pd.NA,
+            )
+
+    return result
+
+
+def _split_compact_hour(hour_raw: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """
+    Split integer hour or compact HHMM values into hour and minute Series.
+    """
+    hour = hour_raw.where(hour_raw < 100, hour_raw // 100)
+    minute = pd.Series(0, index=hour_raw.index).where(hour_raw < 100, hour_raw % 100)
+
+    invalid_time = (
+        (hour < 0)
+        | (hour > 23)
+        | (minute < 0)
+        | (minute > 59)
+    )
+
+    if bool(invalid_time.any()):
+        raise ValueError("Invalid ROCLOUD hour/minute values were found.")
+
+    return hour, minute
 
 
 def _build_rocloud_text_time(
@@ -211,7 +524,7 @@ def _build_rocloud_text_time(
     hour_col: str = "hh",
 ) -> pd.Series:
     """
-    Build a datetime Series from ROCLOUD text date and hour columns.
+    Build a datetime Series from flat ROCLOUD date and hour columns.
 
     The hour column accepts both integer hours, for example ``6`` and ``18``,
     and compact HHMM values, for example ``0600`` and ``1800``.
@@ -224,19 +537,7 @@ def _build_rocloud_text_time(
     month = pd.to_numeric(df[month_col], errors="raise").astype(int)
     day = pd.to_numeric(df[day_col], errors="raise").astype(int)
     hour_raw = pd.to_numeric(df[hour_col], errors="raise").astype(int)
-
-    hour = hour_raw.where(hour_raw < 100, hour_raw // 100)
-    minute = pd.Series(0, index=df.index).where(hour_raw < 100, hour_raw % 100)
-
-    invalid_time = (
-        (hour < 0)
-        | (hour > 23)
-        | (minute < 0)
-        | (minute > 59)
-    )
-
-    if bool(invalid_time.any()):
-        raise ValueError("Invalid ROCLOUD hour/minute values were found.")
+    hour, minute = _split_compact_hour(hour_raw)
 
     date = pd.to_datetime(
         {
@@ -253,12 +554,44 @@ def _build_rocloud_text_time(
     )
 
 
+def _build_rocloud_database_time(
+    df: pd.DataFrame,
+    date_col: str = "date",
+    hour_col: str = "hh",
+) -> pd.Series:
+    """
+    Build a datetime Series from database date and hour columns.
+
+    The database date column is expected as YYYYMMDD.
+    """
+    for column in (date_col, hour_col):
+        if column not in df.columns:
+            raise KeyError(f"Missing ROCLOUD database date/time column: {column}")
+
+    date_text = df[date_col].astype(str).str.strip().str.replace(
+        r"\.0$",
+        "",
+        regex=True,
+    )
+    date_text = date_text.str.zfill(8)
+    hour_raw = pd.to_numeric(df[hour_col], errors="raise").astype(int)
+    hour, minute = _split_compact_hour(hour_raw)
+
+    date = pd.to_datetime(date_text, format="%Y%m%d", errors="raise")
+
+    return date + pd.to_timedelta(hour, unit="h") + pd.to_timedelta(
+        minute,
+        unit="m",
+    )
+
+
 def rocloud_text_to_dataframe(
     path: str | Path,
     names: Sequence[str] = ROCLOUD_TEXT_COLUMNS,
     missing_values: Sequence[float | int] = (-9999,),
     synoptic_only: bool = False,
     sort: bool = True,
+    validate_record_counts: bool = False,
     **kwargs: Any,
 ) -> pd.DataFrame:
     """
@@ -275,20 +608,22 @@ def rocloud_text_to_dataframe(
 
     Additional metadata columns are preserved when present, including
     cyclone center coordinates, maximum wind, central pressure, mean
-    ROCLOUD radius and shape metrics.
+    ROCLOUD radius, shape metrics, RBP radii and storm names.
 
     Parameters
     ----------
     path : str or pathlib.Path
         Input ROCLOUD text file.
     names : sequence of str, default=ROCLOUD_TEXT_COLUMNS
-        Column names assigned to the input file.
+        Column names assigned to flat 17-column input files.
     missing_values : sequence of int or float, default=(-9999,)
         Values used to denote missing data.
     synoptic_only : bool, default=False
         If True, keep only 00, 06, 12 and 18 UTC records.
     sort : bool, default=True
         Whether to sort by storm_id and time.
+    validate_record_counts : bool, default=False
+        If True, validate database-block declared record counts.
     **kwargs : Any
         Additional keyword arguments passed to :func:`read_rocloud_text_table`.
 
@@ -301,6 +636,7 @@ def rocloud_text_to_dataframe(
         path=path,
         names=names,
         missing_values=missing_values,
+        validate_record_counts=validate_record_counts,
         **kwargs,
     )
 
@@ -317,13 +653,18 @@ def standardize_rocloud_text_dataframe(
     sort: bool = True,
 ) -> pd.DataFrame:
     """
-    Standardize a raw ROCLOUD 17-column text DataFrame.
+    Standardize a raw ROCLOUD text DataFrame.
+
+    Supported raw layouts are:
+
+    - flat 17-column rows with ``CT`` as the storm identifier;
+    - database block rows already expanded with ``storm_id`` and
+      ``storm_name`` metadata.
 
     Parameters
     ----------
     df : pandas.DataFrame
-        Raw ROCLOUD text DataFrame with columns equivalent to
-        ``ROCLOUD_TEXT_COLUMNS``.
+        Raw ROCLOUD text DataFrame.
     synoptic_only : bool, default=False
         If True, keep only 00, 06, 12 and 18 UTC records.
     sort : bool, default=True
@@ -335,16 +676,25 @@ def standardize_rocloud_text_dataframe(
         DataFrame standardized to the ITCHI ROCLOUD contract.
     """
     result = standardize_column_names(df)
-    missing = set(ROCLOUD_TEXT_COLUMNS).difference(result.columns)
+    flat_columns = set(ROCLOUD_TEXT_COLUMNS)
+    database_columns = {"storm_id", "storm_name", "date", "hh"}
 
-    if missing:
-        missing_text = ", ".join(sorted(missing))
-        raise KeyError(f"Missing ROCLOUD text column(s): {missing_text}")
-
-    result = result.copy()
-    result["time"] = _build_rocloud_text_time(result)
-
-    result = result.rename(columns=ROCLOUD_TEXT_CANONICAL_RENAME_MAP)
+    if flat_columns.issubset(result.columns):
+        result = result.copy()
+        result["time"] = _build_rocloud_text_time(result)
+        result = result.rename(columns=ROCLOUD_TEXT_CANONICAL_RENAME_MAP)
+    elif database_columns.issubset(result.columns):
+        result = result.copy()
+        result["time"] = _build_rocloud_database_time(result)
+        result = result.rename(columns=ROCLOUD_DATABASE_CANONICAL_RENAME_MAP)
+    else:
+        expected_text = ", ".join(ROCLOUD_TEXT_COLUMNS)
+        expected_database = ", ".join(sorted(database_columns))
+        raise KeyError(
+            "Unrecognized ROCLOUD text layout. Expected either flat columns "
+            f"({expected_text}) or database metadata columns "
+            f"({expected_database})."
+        )
 
     canonical = standardize_rocloud_dataframe(
         result,
@@ -506,9 +856,12 @@ def standardize_rocloud_dataframe(
 
     result["storm_id"] = result["storm_id"].astype(str)
 
-    for column in DEFAULT_ROCLOUD_COLUMN_MAP.values():
+    for column in ROCLOUD_STANDARD_NUMERIC_COLUMNS:
         if column in result.columns:
             result[column] = pd.to_numeric(result[column], errors="coerce")
+
+    if "storm_name" in result.columns:
+        result["storm_name"] = result["storm_name"].astype(str).str.strip()
 
     if sort:
         result = result.sort_values(["storm_id", "time"]).reset_index(drop=True)
