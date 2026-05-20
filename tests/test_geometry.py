@@ -215,3 +215,42 @@ def test_assign_quadrant_radius_xarray() -> None:
     )
 
     xr.testing.assert_allclose(radius, expected)
+
+
+def test_compute_relative_quadrant_xarray_uses_canonical_labels() -> None:
+    """
+    Test that xarray quadrant calculation returns canonical ITCHI labels.
+
+    This guards against returning non-canonical labels such as 'SE', which
+    would break quadrant-specific radius assignment.
+    """
+    lon = xr.DataArray(
+        data=[[1.0, 1.0], [-1.0, -1.0]],
+        dims=("y", "x"),
+    )
+
+    lat = xr.DataArray(
+        data=[[1.0, -1.0], [-1.0, 1.0]],
+        dims=("y", "x"),
+    )
+
+    quadrant = compute_relative_quadrant(
+        lon=lon,
+        lat=lat,
+        center_lon=0.0,
+        center_lat=0.0,
+    )
+
+    expected = xr.DataArray(
+        data=[
+            ["RNE", "RSE"],
+            ["RSW", "RNW"],
+        ],
+        dims=("y", "x"),
+    )
+
+    xr.testing.assert_equal(quadrant, expected)
+
+    observed_labels = set(str(value) for value in quadrant.values.ravel())
+
+    assert observed_labels == {"RNE", "RSE", "RSW", "RNW"}

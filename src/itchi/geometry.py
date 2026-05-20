@@ -162,7 +162,7 @@ def compute_relative_quadrant(
             "RNE",
             xr.where(
                 (~is_north) & is_east,
-                "SE",
+                "RSE",
                 xr.where(
                     (~is_north) & (~is_east),
                     "RSW",
