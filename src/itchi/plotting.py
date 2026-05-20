@@ -183,53 +183,6 @@ def configure_map_axis(
     return ax
 
 
-def configurar_mapa(
-    ax: Any,
-    crs: Any,
-    lon_extent: tuple[float, float] = (-120.0, -80.0),
-    lat_extent: tuple[float, float] = (10.0, 35.0),
-    linewidth: float = 1.2,
-    tick_width: float = 1.5,
-    tick_size: float = 6.0,
-    label_size: float = 11.0,
-    grid_spacing: float = 4.0,
-    grid_color: str = "0.5",
-    grid_alpha: float = 0.35,
-    grid_linestyle: str = "--",
-    land_color: str = "lightgray",
-    land_alpha: float = 0.8,
-    lon_tick_spacing: float = 5.0,
-    lat_tick_spacing: float = 5.0,
-) -> Any:
-    """
-    Backward-compatible Spanish wrapper for :func:`configure_map_axis`.
-
-    The previous notebook helper is preserved as an alias with improved
-    defaults and cleaner internals. New code should prefer
-    ``configure_map_axis`` and ``MapStyle``.
-    """
-    style = MapStyle(
-        lon_extent=lon_extent,
-        lat_extent=lat_extent,
-        coastline_linewidth=linewidth,
-        border_linewidth=linewidth,
-        spine_linewidth=tick_width,
-        tick_width=tick_width,
-        tick_size=tick_size,
-        label_size=label_size,
-        grid_spacing=grid_spacing,
-        grid_color=grid_color,
-        grid_alpha=grid_alpha,
-        grid_linestyle=grid_linestyle,
-        land_color=land_color,
-        land_alpha=land_alpha,
-        lon_tick_spacing=lon_tick_spacing,
-        lat_tick_spacing=lat_tick_spacing,
-    )
-
-    return configure_map_axis(ax=ax, crs=crs, style=style)
-
-
 def create_segmented_colormap(
     sequence: Sequence[float | tuple[float, float, float]],
     name: str = "ITCHICustomMap",
@@ -277,15 +230,6 @@ def create_segmented_colormap(
             color_dict["blue"].append([item, b1, b2])
 
     return mcolors.LinearSegmentedColormap(name, color_dict)
-
-
-def crear_colormap(
-    seq: Sequence[float | tuple[float, float, float]],
-) -> mcolors.LinearSegmentedColormap:
-    """
-    Backward-compatible Spanish wrapper for custom colormap creation.
-    """
-    return create_segmented_colormap(seq)
 
 
 def get_crameri_colormap(
