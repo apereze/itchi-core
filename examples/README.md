@@ -20,14 +20,15 @@ outputs/notebooks/
 
 ---
 
-## Available scripts
+## Available scripts and notebooks
 
-| Script | Purpose |
+| Resource | Purpose |
 |---|---|
-| `smoke_test_synthetic.py` | Direct synthetic end-to-end ITCHI calculation. |
-| `smoke_test_from_tables.py` | Table-driven workflow using synthetic track and ROCLOUD tables. |
-| `real_data_template.py` | Parameterized real-data workflow using IBTrACS, ROCLOUD and MSWEP. |
-| `read_compiled_event.py` | Read and validate an exported compiled event. |
+| `examples/smoke_test_synthetic.py` | Direct synthetic end-to-end ITCHI calculation. |
+| `examples/smoke_test_from_tables.py` | Table-driven workflow using synthetic track and ROCLOUD tables. |
+| `examples/real_data_template.py` | Parameterized real-data workflow using IBTrACS, ROCLOUD and MSWEP. |
+| `examples/read_compiled_event.py` | Read and validate an exported compiled event. |
+| `notebooks/02_real_data_template.ipynb` | Interactive real-data inspection notebook. |
 
 ---
 
@@ -159,6 +160,31 @@ Important: the real-data template treats MSWEP as valid-time snapshots. It does 
 
 ---
 
+## Interactive real-data inspection notebook
+
+`notebooks/02_real_data_template.ipynb` is the interactive counterpart of the CLI template.
+
+Use it before production execution to inspect:
+
+- `track_df` from IBTrACS;
+- `rocloud_df` from the ROCLOUD database;
+- MSWEP `valid_time` coverage;
+- longitude/latitude grids;
+- one precipitation snapshot;
+- `snapshot_inputs[0]`;
+- compiled metadata;
+- `ITCHI`, `ITCHI_max` and `ITCHI_acc` maps.
+
+Launch:
+
+```bash
+jupyter lab notebooks/02_real_data_template.ipynb
+```
+
+The first editable cell defines all local paths, event metadata, spatial bounds and initial thresholds.
+
+---
+
 ## Read compiled event
 
 `read_compiled_event.py` validates that an exported compiled event can be consumed without recomputing ITCHI.
@@ -214,6 +240,29 @@ python examples/read_compiled_event.py \
 
 python -m pytest tests/
 pre-commit run --all-files
+```
+
+After the synthetic sequence passes, inspect a real storm interactively:
+
+```bash
+jupyter lab notebooks/02_real_data_template.ipynb
+```
+
+Then run the non-interactive template:
+
+```bash
+python examples/real_data_template.py \
+  --ibtracs-path data/ibtracs/ibtracs.nc \
+  --rocloud-path data/rocloud/EP_TCSize_2000_2024.dat \
+  --mswep-path data/mswep/event_precip.nc \
+  --precipitation-variable precipitation \
+  --storm-id EP182023 \
+  --start-time 2023-10-24T00:00:00 \
+  --end-time 2023-10-25T06:00:00 \
+  --q90 10 \
+  --q95 20 \
+  --q99 30 \
+  --output-path outputs/events/EP182023_itchi.nc
 ```
 
 ---
