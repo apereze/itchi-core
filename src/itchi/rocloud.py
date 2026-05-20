@@ -257,9 +257,7 @@ def read_rocloud_text_table(
     result = standardize_column_names(result)
 
     numeric_columns = [
-        column
-        for column in ROCLOUD_TEXT_NUMERIC_COLUMNS
-        if column in result.columns
+        column for column in ROCLOUD_TEXT_NUMERIC_COLUMNS if column in result.columns
     ]
 
     result = _coerce_numeric_columns(result, numeric_columns)
@@ -448,9 +446,7 @@ def validate_rocloud_database_record_counts(df: pd.DataFrame) -> None:
         actual = int(len(storm_df))
 
         if declared != actual:
-            mismatches.append(
-                f"{storm_id}: declared={declared}, parsed={actual}"
-            )
+            mismatches.append(f"{storm_id}: declared={declared}, parsed={actual}")
 
     if mismatches:
         mismatch_text = "; ".join(mismatches)
@@ -503,12 +499,7 @@ def _split_compact_hour(hour_raw: pd.Series) -> tuple[pd.Series, pd.Series]:
     hour = hour_raw.where(hour_raw < 100, hour_raw // 100)
     minute = pd.Series(0, index=hour_raw.index).where(hour_raw < 100, hour_raw % 100)
 
-    invalid_time = (
-        (hour < 0)
-        | (hour > 23)
-        | (minute < 0)
-        | (minute > 59)
-    )
+    invalid_time = (hour < 0) | (hour > 23) | (minute < 0) | (minute > 59)
 
     if bool(invalid_time.any()):
         raise ValueError("Invalid ROCLOUD hour/minute values were found.")
@@ -548,9 +539,13 @@ def _build_rocloud_text_time(
         errors="raise",
     )
 
-    return date + pd.to_timedelta(hour, unit="h") + pd.to_timedelta(
-        minute,
-        unit="m",
+    return (
+        date
+        + pd.to_timedelta(hour, unit="h")
+        + pd.to_timedelta(
+            minute,
+            unit="m",
+        )
     )
 
 
@@ -568,10 +563,15 @@ def _build_rocloud_database_time(
         if column not in df.columns:
             raise KeyError(f"Missing ROCLOUD database date/time column: {column}")
 
-    date_text = df[date_col].astype(str).str.strip().str.replace(
-        r"\.0$",
-        "",
-        regex=True,
+    date_text = (
+        df[date_col]
+        .astype(str)
+        .str.strip()
+        .str.replace(
+            r"\.0$",
+            "",
+            regex=True,
+        )
     )
     date_text = date_text.str.zfill(8)
     hour_raw = pd.to_numeric(df[hour_col], errors="raise").astype(int)
@@ -579,9 +579,13 @@ def _build_rocloud_database_time(
 
     date = pd.to_datetime(date_text, format="%Y%m%d", errors="raise")
 
-    return date + pd.to_timedelta(hour, unit="h") + pd.to_timedelta(
-        minute,
-        unit="m",
+    return (
+        date
+        + pd.to_timedelta(hour, unit="h")
+        + pd.to_timedelta(
+            minute,
+            unit="m",
+        )
     )
 
 
