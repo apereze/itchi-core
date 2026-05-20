@@ -361,3 +361,41 @@ def test_write_compiled_event_netcdf(tmp_path: Path) -> None:
         assert "snapshot_metadata_json" in loaded.attrs
     finally:
         loaded.close()
+
+
+def test_compiled_event_to_dataset_numpy_uses_explicit_dims() -> None:
+    """
+    Test compiled event conversion from NumPy outputs with explicit dimensions.
+
+    This protects against xarray AlignmentError caused by automatic dimensions
+    such as dim_0 being reused with conflicting sizes.
+    """
+    compiled_event = {
+        "snapshots": {
+            "ITCHI": np.zeros((2, 3, 4)),
+            "H_P": np.ones((2, 3, 4)),
+        },
+        "metadata": [
+            {"time": "2020-01-01T00:00"},
+            {"time": "2020-01-01T06:00"},
+        ],
+        "event_products": {
+            "ITCHI_max": np.zeros((3, 4)),
+            "ITCHI_acc": np.ones((3, 4)),
+        },
+    }
+
+    dataset = compiled_event_to_dataset(
+        compiled_event=compiled_event,
+        time_dim="time",
+        snapshot_spatial_dims=("y", "x"),
+        event_spatial_dims=("y", "x"),
+    )
+
+    assert dataset["ITCHI"].dims == ("time", "y", "x")
+    assert dataset["H_P"].dims == ("time", "y", "x")
+    assert dataset["ITCHI_max"].dims == ("y", "x")
+    assert dataset["ITCHI_acc"].dims == ("y", "x")
+
+    assert dataset["ITCHI"].shape == (2, 3, 4)
+    assert dataset["ITCHI_max"].shape == (3, 4)

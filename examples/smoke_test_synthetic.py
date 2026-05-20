@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from itchi.compiler import compile_itchi_event
+from itchi.io import write_compiled_event
 
 
 def synthetic_precipitation(
@@ -177,7 +178,11 @@ def plot_smoke_test(
     plt.show()
 
 
-def run_smoke_test(make_plot: bool = False, figure_path: str | None = None) -> None:
+def run_smoke_test(
+    make_plot: bool = False,
+    figure_path: str | None = None,
+    output_path: str | None = None,
+) -> None:
     """
     Run the synthetic ITCHI smoke test.
     """
@@ -237,9 +242,26 @@ def run_smoke_test(make_plot: bool = False, figure_path: str | None = None) -> N
         "ITCHI_acc min/max: " f"{np.nanmin(itchi_acc):.3f}, {np.nanmax(itchi_acc):.3f}"
     )
 
-    print("\nMetadata:")
-    for item in compiled["metadata"]:
-        print(item)
+    if output_path is not None:
+        written_path = write_compiled_event(
+            compiled_event=compiled,
+            path=output_path,
+            attrs={
+                "title": "Synthetic ITCHI smoke test",
+                "storm_id": "SYNTHETIC",
+                "itchi_version": "0.1",
+                "precipitation_treatment": "snapshot_not_accumulation",
+                "description": (
+                    "Synthetic end-to-end ITCHI event generated for "
+                    "workflow validation."
+                ),
+            },
+            time_dim="time",
+            snapshot_spatial_dims=("y", "x"),
+            event_spatial_dims=("y", "x"),
+            overwrite=True,
+        )
+        print(f"\nSaved compiled ITCHI event: {written_path}")
 
     if make_plot:
         output_path = Path(figure_path) if figure_path is not None else None
@@ -276,6 +298,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional path to save diagnostic figure.",
     )
 
+    parser.add_argument(
+        "--output-path",
+        type=str,
+        default=None,
+        help="Optional path to save compiled ITCHI event as NetCDF or Zarr.",
+    )
+
     return parser.parse_args()
 
 
@@ -285,4 +314,5 @@ if __name__ == "__main__":
     run_smoke_test(
         make_plot=args.plot,
         figure_path=args.figure_path,
+        output_path=args.output_path,
     )
