@@ -119,11 +119,19 @@ def configure_map_axis(
     ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=resolved_crs)
 
     ax.set_xticks(
-        np.arange(lon_min, lon_max + resolved_style.lon_tick_spacing, resolved_style.lon_tick_spacing),
+        np.arange(
+            lon_min,
+            lon_max + resolved_style.lon_tick_spacing,
+            resolved_style.lon_tick_spacing,
+        ),
         crs=resolved_crs,
     )
     ax.set_yticks(
-        np.arange(lat_min, lat_max + resolved_style.lat_tick_spacing, resolved_style.lat_tick_spacing),
+        np.arange(
+            lat_min,
+            lat_max + resolved_style.lat_tick_spacing,
+            resolved_style.lat_tick_spacing,
+        ),
         crs=resolved_crs,
     )
     ax.xaxis.set_major_formatter(LongitudeFormatter())
@@ -226,7 +234,9 @@ def create_segmented_colormap(
             previous_color = seq[idx - 1]
             next_color = seq[idx + 1]
 
-            if not isinstance(previous_color, tuple) or not isinstance(next_color, tuple):
+            if not isinstance(previous_color, tuple) or not isinstance(
+                next_color, tuple
+            ):
                 raise ValueError("Floats in sequence must be surrounded by RGB tuples.")
 
             r1, g1, b1 = previous_color

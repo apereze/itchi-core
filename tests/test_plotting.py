@@ -9,8 +9,8 @@ import pytest
 
 from itchi.plotting import (
     MapStyle,
-    create_segmented_colormap,
     crear_colormap,
+    create_segmented_colormap,
     get_default_itchi_colormap,
 )
 
