@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 import xarray as xr
 
 from itchi.precipitation_snapshots import (
@@ -206,7 +205,9 @@ def _find_coordinate_name(
             return candidate
 
     candidates_text = ", ".join(candidates)
-    raise ValueError(f"Could not infer MSWEP {label}. Expected one of: {candidates_text}.")
+    raise ValueError(
+        f"Could not infer MSWEP {label}. Expected one of: {candidates_text}."
+    )
 
 
 def infer_mswep_lat_lon_names(

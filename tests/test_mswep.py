@@ -256,7 +256,9 @@ def test_select_mswep_precipitation_snapshot_exact() -> None:
     )
 
     expected = dataset["precipitation"].isel(time=2, drop=True)
-    expected = expected.rename({"time": "valid_time"}) if "time" in expected.dims else expected
+    expected = (
+        expected.rename({"time": "valid_time"}) if "time" in expected.dims else expected
+    )
 
     xr.testing.assert_allclose(result, expected)
     assert "valid_time" not in result.dims
