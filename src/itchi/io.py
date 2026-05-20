@@ -18,6 +18,7 @@ This module only handles conversion to xarray datasets and file I/O.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -378,6 +379,146 @@ def write_result(
         attrs=attrs,
         include=include,
         exclude=exclude,
+    )
+
+    return write_dataset(
+        dataset=dataset,
+        path=path,
+        file_format=file_format,
+        overwrite=overwrite,
+    )
+
+
+def _json_default(value: Any) -> str:
+    """
+    Convert non-JSON-serializable objects to strings.
+
+    This is mainly used for snapshot metadata that may include timestamps,
+    tuples or other lightweight Python objects.
+    """
+    return str(value)
+
+
+def compiled_event_to_dataset(
+    compiled_event: Mapping[str, Any],
+    attrs: Mapping[str, Any] | None = None,
+    include_metadata_as_attrs: bool = True,
+    metadata_attr_name: str = "snapshot_metadata_json",
+) -> xr.Dataset:
+    """
+    Convert a compiled ITCHI event to an xarray Dataset.
+
+    The compiler output is intentionally nested:
+
+    - compiled_event["snapshots"] contains time-stacked spatial fields.
+    - compiled_event["event_products"] contains event-level products.
+    - compiled_event["metadata"] contains non-spatial per-snapshot metadata.
+
+    This function converts only spatial and event-level fields into data
+    variables. Metadata are stored as a JSON attribute by default.
+
+    Parameters
+    ----------
+    compiled_event : Mapping
+        Dictionary returned by itchi.compiler.compile_itchi_event.
+    attrs : Mapping or None, default=None
+        Additional global attributes for the output Dataset.
+    include_metadata_as_attrs : bool, default=True
+        Whether to serialize snapshot metadata into a Dataset attribute.
+    metadata_attr_name : str, default="snapshot_metadata_json"
+        Name of the Dataset attribute used to store metadata JSON.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset containing snapshot variables and event-level products.
+
+    Raises
+    ------
+    KeyError
+        If compiled_event does not contain "snapshots".
+    TypeError
+        If a variable cannot be represented as an xarray-compatible variable.
+    """
+    if "snapshots" not in compiled_event:
+        raise KeyError("compiled_event must contain a 'snapshots' entry.")
+
+    dataset = xr.Dataset(attrs=dict(attrs or {}))
+
+    snapshots = compiled_event["snapshots"]
+
+    if not isinstance(snapshots, Mapping):
+        raise TypeError("compiled_event['snapshots'] must be a mapping.")
+
+    for name, value in snapshots.items():
+        if isinstance(value, xr.DataArray):
+            dataset[name] = value
+        else:
+            dataset[name] = xr.DataArray(value, name=name)
+
+    event_products = compiled_event.get("event_products", {})
+
+    if event_products is not None:
+        if not isinstance(event_products, Mapping):
+            raise TypeError("compiled_event['event_products'] must be a mapping.")
+
+        for name, value in event_products.items():
+            if isinstance(value, xr.DataArray):
+                dataset[name] = value
+            else:
+                dataset[name] = xr.DataArray(value, name=name)
+
+    metadata = compiled_event.get("metadata")
+
+    if include_metadata_as_attrs and metadata is not None:
+        dataset.attrs[metadata_attr_name] = json.dumps(
+            metadata,
+            default=_json_default,
+        )
+        dataset.attrs["n_snapshot_metadata_records"] = len(metadata)
+
+    return dataset
+
+
+def write_compiled_event(
+    compiled_event: Mapping[str, Any],
+    path: str | Path,
+    attrs: Mapping[str, Any] | None = None,
+    include_metadata_as_attrs: bool = True,
+    metadata_attr_name: str = "snapshot_metadata_json",
+    file_format: str | None = None,
+    overwrite: bool = True,
+) -> Path:
+    """
+    Write a compiled ITCHI event to NetCDF or Zarr.
+
+    Parameters
+    ----------
+    compiled_event : Mapping
+        Dictionary returned by itchi.compiler.compile_itchi_event.
+    path : str or pathlib.Path
+        Output path.
+    attrs : Mapping or None, default=None
+        Additional global attributes for the output Dataset.
+    include_metadata_as_attrs : bool, default=True
+        Whether to serialize snapshot metadata into a Dataset attribute.
+    metadata_attr_name : str, default="snapshot_metadata_json"
+        Name of the Dataset attribute used to store metadata JSON.
+    file_format : {"netcdf", "zarr"} or None, default=None
+        Output format. If None, inferred from path extension.
+    overwrite : bool, default=True
+        Whether to overwrite an existing file or store.
+
+    Returns
+    -------
+    pathlib.Path
+        Written output path.
+    """
+    dataset = compiled_event_to_dataset(
+        compiled_event=compiled_event,
+        attrs=attrs,
+        include_metadata_as_attrs=include_metadata_as_attrs,
+        metadata_attr_name=metadata_attr_name,
     )
 
     return write_dataset(

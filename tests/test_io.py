@@ -11,11 +11,13 @@ import pytest
 import xarray as xr
 
 from itchi.io import (
+    compiled_event_to_dataset,
     ensure_directory,
     ensure_parent_directory,
     infer_xarray_format,
     read_dataset,
     result_to_dataset,
+    write_compiled_event,
     write_dataset,
     write_result,
 )
@@ -228,5 +230,134 @@ def test_write_result_netcdf(tmp_path: Path) -> None:
     try:
         assert set(loaded.data_vars) == {"ITCHI", "H_P"}
         assert loaded.attrs["storm_id"] == "TEST"
+    finally:
+        loaded.close()
+
+
+def test_compiled_event_to_dataset_xarray() -> None:
+    """
+    Test conversion from compiled event dictionary to xarray Dataset.
+    """
+    itchi = xr.DataArray(
+        data=[
+            [[0.0, 0.5], [0.2, 1.0]],
+            [[0.1, 0.7], [0.4, 0.9]],
+        ],
+        dims=("time", "lat", "lon"),
+        coords={
+            "time": ["2020-01-01T00:00", "2020-01-01T06:00"],
+            "lat": [15.0, 16.0],
+            "lon": [-100.0, -99.0],
+        },
+        name="ITCHI",
+    )
+
+    itchi_max = itchi.max(dim="time")
+    itchi_max.name = "ITCHI_max"
+
+    compiled_event = {
+        "snapshots": {
+            "ITCHI": itchi,
+        },
+        "metadata": [
+            {
+                "time": "2020-01-01T00:00",
+                "wind_hazard_source": "provided",
+            },
+            {
+                "time": "2020-01-01T06:00",
+                "wind_hazard_source": "provided",
+            },
+        ],
+        "event_products": {
+            "ITCHI_max": itchi_max,
+        },
+    }
+
+    dataset = compiled_event_to_dataset(
+        compiled_event=compiled_event,
+        attrs={
+            "storm_id": "TEST",
+            "title": "Synthetic compiled ITCHI event",
+        },
+    )
+
+    assert isinstance(dataset, xr.Dataset)
+    assert set(dataset.data_vars) == {"ITCHI", "ITCHI_max"}
+    assert dataset["ITCHI"].dims == ("time", "lat", "lon")
+    assert dataset["ITCHI_max"].dims == ("lat", "lon")
+    assert dataset.attrs["storm_id"] == "TEST"
+    assert "snapshot_metadata_json" in dataset.attrs
+    assert dataset.attrs["n_snapshot_metadata_records"] == 2
+
+
+def test_compiled_event_to_dataset_rejects_missing_snapshots() -> None:
+    """
+    Test that compiled event conversion requires snapshots.
+    """
+    with pytest.raises(KeyError):
+        compiled_event_to_dataset({"metadata": []})
+
+
+def test_write_compiled_event_netcdf(tmp_path: Path) -> None:
+    """
+    Test writing a compiled ITCHI event to NetCDF.
+    """
+    itchi = xr.DataArray(
+        data=[
+            [[0.0, 0.5], [0.2, 1.0]],
+            [[0.1, 0.7], [0.4, 0.9]],
+        ],
+        dims=("time", "lat", "lon"),
+        coords={
+            "time": ["2020-01-01T00:00", "2020-01-01T06:00"],
+            "lat": [15.0, 16.0],
+            "lon": [-100.0, -99.0],
+        },
+        name="ITCHI",
+    )
+
+    itchi_max = itchi.max(dim="time")
+    itchi_max.name = "ITCHI_max"
+
+    compiled_event = {
+        "snapshots": {
+            "ITCHI": itchi,
+        },
+        "metadata": [
+            {
+                "time": "2020-01-01T00:00",
+                "R_direct_source": "R34",
+            },
+            {
+                "time": "2020-01-01T06:00",
+                "R_direct_source": "R34",
+            },
+        ],
+        "event_products": {
+            "ITCHI_max": itchi_max,
+        },
+    }
+
+    output_path = tmp_path / "outputs" / "compiled_event.nc"
+
+    written_path = write_compiled_event(
+        compiled_event=compiled_event,
+        path=output_path,
+        attrs={
+            "storm_id": "TEST",
+        },
+    )
+
+    assert written_path.exists()
+
+    loaded = read_dataset(written_path)
+
+    try:
+        assert set(loaded.data_vars) == {"ITCHI", "ITCHI_max"}
+        assert loaded["ITCHI"].dims == ("time", "lat", "lon")
+        assert loaded["ITCHI_max"].dims == ("lat", "lon")
+        assert loaded.attrs["storm_id"] == "TEST"
+        assert "snapshot_metadata_json" in loaded.attrs
     finally:
         loaded.close()
