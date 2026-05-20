@@ -326,7 +326,9 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--ibtracs-path", required=True, help="IBTrACS NetCDF path.")
-    parser.add_argument("--rocloud-path", required=True, help="ROCLOUD .dat/.txt/.dot path.")
+    parser.add_argument(
+        "--rocloud-path", required=True, help="ROCLOUD .dat/.txt/.dot path."
+    )
     parser.add_argument("--mswep-path", required=True, help="MSWEP NetCDF path.")
     parser.add_argument("--precipitation-variable", default=None)
     parser.add_argument("--storm-id", required=True)
