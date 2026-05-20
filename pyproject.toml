@@ -46,6 +46,7 @@ dependencies = [
     "rasterio",
     "cartopy",
     "matplotlib",
+    "cmcrameri",
     "PyYAML",
     "tqdm"
 ]
