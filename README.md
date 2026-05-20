@@ -778,7 +778,7 @@ feat: add event-level ITCHI compiler
 
 **Adolfo Perez-Estrada**
 
-Universidad Nacional Autónoma de México (UNAM)  
+Universidad Nacional Autónoma de México (UNAM)
 Instituto de Ciencias de la Atmósfera y Cambio Climático (ICACC)
 
 ---
