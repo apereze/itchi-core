@@ -165,7 +165,7 @@ def test_ibtracs_to_track_dataframe() -> None:
     assert list(result["lon"]) == [-98.0, -98.5, -99.0]
     assert list(result["vmax_kt"]) == [80.0, 90.0, 100.0]
     assert list(result["pmin_hpa"]) == [970.0, 960.0, 950.0]
-    assert list(result["rmw_km"]) == [20.0, 18.0, 16.0]
+    np.testing.assert_allclose(result["rmw_km"], [20.0, 18.0, 16.0] * np.array(1.852))    
     assert list(result["r34_rne"]) == [45.0, 50.0, 55.0]
     assert list(result["r34_rse"]) == [40.0, 45.0, 50.0]
     assert list(result["r34_rsw"]) == [35.0, 40.0, 45.0]
