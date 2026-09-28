@@ -207,3 +207,34 @@ quality_control:
   check_exterior_region_is_zero: true
   check_r34_le_rocloud: true
   check_required_variables: true
+
+
+# ============================================================
+# Parametric radii (Willoughby et al. 2006; Pérez-Alarcón et al. 2021)
+# ============================================================
+
+parametric_radii:
+  enabled: true
+  profile: "willoughby2006"
+
+  # Empirical Rmax used when observed RMW is missing: "w06" | "pa21"
+  rmax_variant: "w06"
+  use_observed_rmw: true
+  rmw_unit: "nm"            # IBTrACS usa_rmw is in nautical miles
+
+  # Calibrate the outer decay length X1 to observed mean R34 when available
+  calibrate_to_r34: true
+  r34_unit: "nm"
+
+  # Outer-size threshold in m s-1: 2.0 (PA21) or 2.572 (5 kt, Knaff et al. 2014)
+  outer_threshold_ms: 2.0
+
+  # Role of the W06 outer radius as attribution radius:
+  # "never" | "fallback" (only where ROCLOUD is missing) | "always"
+  attribution_radius_mode: "fallback"
+
+  # Use W06 R34 as fallback_direct_radius_km when observed R34 is missing
+  use_as_direct_fallback: true
+
+  # Wind hazard profile: "rankine" (wind.py) | "w06"
+  wind_profile: "rankine"
