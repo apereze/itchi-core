@@ -220,7 +220,7 @@ parametric_radii:
   # Empirical Rmax used when observed RMW is missing: "w06" | "pa21"
   rmax_variant: "w06"
   use_observed_rmw: true
-  rmw_unit: "nm"            # IBTrACS usa_rmw is in nautical miles
+  rmw_unit: "km"            # IBTrACS usa_rmw is in nautical miles
 
   # Calibrate the outer decay length X1 to observed mean R34 when available
   calibrate_to_r34: true
