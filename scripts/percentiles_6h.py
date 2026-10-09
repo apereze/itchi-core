@@ -238,5 +238,4 @@ def run(cfg: Config = Config()) -> xr.Dataset:
 
 if __name__ == "__main__":
 
-    # Prueba con el año generado por mswep_v3_6h_accum.py; luego ampliar el periodo.
-    out = run(Config(start_year=2020, end_year=2020, by_hour=True))
+    out = run(Config(start_year=2000, end_year=2025, by_hour=True))

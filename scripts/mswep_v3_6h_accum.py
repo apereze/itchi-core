@@ -487,5 +487,4 @@ def run(cfg: Config = Config()) -> None:
 
 if __name__ == "__main__":
 
-    # Prueba: un año primero, revisar el archivo y después ampliar el periodo.
-    run(Config(start_year=2020, end_year=2020, workers=1))
+    run(Config(start_year=2000, end_year=2025, time_label="start", workers=2))
