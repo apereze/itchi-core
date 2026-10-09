@@ -55,7 +55,7 @@ from percentiles import (
 @dataclass
 class Config:
 
-    directory: str = "../data/interim/mswep_v3_6h"
+    directory: str = "D:/MSWEP_V316_6H"
 
     start_year: int = 2000
     end_year: int = 2025

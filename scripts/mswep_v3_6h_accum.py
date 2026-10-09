@@ -77,7 +77,9 @@ class Config:
 
     overwrite: bool = False
 
-    out_dir: str = "../data/interim/mswep_v3_6h"
+    # Carpeta HERMANA de la horaria en D:, nunca dentro de ella
+    # (el índice lista todos los .nc de cfg.directory).
+    out_dir: str = "D:/MSWEP_V316_6H"
 
 
 WINDOW_H = 6
@@ -141,7 +143,14 @@ def hours_in_window(T: pd.Timestamp, time_label: str) -> list[pd.Timestamp]:
 
 
 def detect_time_label(path: str) -> str | None:
-    """Infere la convención a partir de time.bounds, si existe."""
+    """
+    Infere la convención a partir de time.bounds, si existe.
+
+    El tiempo de MSWEP V3 viene en float32 (días desde 1900, resolución
+    ~337 s), por lo que no se compara con np.isclose (rtol=1e-5 sobre ~44 000
+    días equivale a ~10 h). Se elige el límite más cercano y se exige que la
+    diferencia sea < 1/4 del intervalo.
+    """
 
     with xr.open_dataset(path, decode_times=False) as ds:
         tname = "time" if "time" in ds else None
@@ -149,13 +158,15 @@ def detect_time_label(path: str) -> str | None:
         if not bname or bname not in ds:
             return None
         t0 = float(ds[tname].values.ravel()[0])
-        b0, b1 = np.asarray(ds[bname].values).reshape(-1, 2)[0]
+        b0, b1 = (float(b) for b in np.asarray(ds[bname].values).reshape(-1, 2)[0])
 
-    if np.isclose(t0, b0):
-        return "start"
-    if np.isclose(t0, b1):
-        return "end"
-    return None
+    d0, d1, width = abs(t0 - b0), abs(t0 - b1), abs(b1 - b0)
+
+    if min(d0, d1) > 0.25 * width:
+        print(f"  ADVERTENCIA: tiempo {t0} no está en un extremo de bounds ({b0}, {b1}).")
+        return None
+
+    return "start" if d0 < d1 else "end"
 
 
 # ============================================================================
@@ -170,9 +181,16 @@ def list_hourly_files(cfg: Config) -> list[str]:
 
 
 def _internal_times(path: str) -> pd.DatetimeIndex:
+    """
+    Tiempo interno redondeado a la hora.
+
+    MSWEP V3 guarda time en float32: al decodificar aparecen errores de
+    ±112.5 s (p. ej. 04:01:52.5 en lugar de 04:00). Sin redondear, 2/3 de
+    las horas no coincidirían con las ventanas.
+    """
 
     with xr.open_dataset(path) as ds:
-        return pd.DatetimeIndex(ds["time"].values)
+        return pd.DatetimeIndex(ds["time"].values).round("h")
 
 
 def build_index(cfg: Config) -> pd.DataFrame:
@@ -311,7 +329,7 @@ def make_reader(cfg: Config, reg: dict):
 # ============================================================================
 
 
-def accumulate_windows(ends, lookup: dict, read_fn, shape: tuple, time_label: str):
+def accumulate_windows(ends, lookup: dict, read_fn, shape: tuple, time_label: str, progress: bool = False):
     """
     Suma 6 campos horarios por ventana.
     Ventana incompleta -> NaN. NaN de un píxel se propaga a la ventana.
@@ -320,7 +338,7 @@ def accumulate_windows(ends, lookup: dict, read_fn, shape: tuple, time_label: st
     out = np.full((len(ends), *shape), np.nan, dtype="float32")
     missing = []
 
-    for k, T in enumerate(ends):
+    for k, T in tqdm(enumerate(ends), total=len(ends), desc="Ventanas 6 h", unit="ven", disable=not progress):
         locs = [lookup.get(h) for h in hours_in_window(T, time_label)]
         if any(loc is None for loc in locs):
             missing.append(T)
@@ -381,6 +399,7 @@ def accumulate_year(year: int, cfg: Config, index_year: pd.DataFrame, time_label
 
     data, missing = accumulate_windows(
         ends, lookup, make_reader(cfg, reg), (reg["lat"].size, reg["lon"].size), time_label,
+        progress=cfg.workers <= 1,
     )
 
     write_year(out, data, ends, reg["lat"], reg["lon"], {
@@ -401,6 +420,18 @@ def accumulate_year(year: int, cfg: Config, index_year: pd.DataFrame, time_label
 # ============================================================================
 
 
+def check_out_dir(cfg: Config) -> None:
+    """Evita escribir el producto de 6 h dentro de la carpeta horaria."""
+
+    src = os.path.normcase(os.path.abspath(cfg.directory))
+    out = os.path.normcase(os.path.abspath(cfg.out_dir))
+    if os.path.commonpath([src, out]) == src:
+        raise SystemExit(
+            f"out_dir ({cfg.out_dir}) está dentro de la carpeta horaria ({cfg.directory}).\n"
+            "Usar una carpeta hermana, p. ej. D:/MSWEP_V316_6H."
+        )
+
+
 def run(cfg: Config = Config()) -> None:
 
     t0 = time.time()
@@ -409,6 +440,7 @@ def run(cfg: Config = Config()) -> None:
     print("ITCHI-CORE · MSWEP V3 horario -> acumulados de 6 h")
     print("=" * 75)
 
+    check_out_dir(cfg)
     os.makedirs(cfg.out_dir, exist_ok=True)
 
     print("\n[1/3] Índice de archivos horarios")
@@ -456,4 +488,4 @@ def run(cfg: Config = Config()) -> None:
 if __name__ == "__main__":
 
     # Prueba: un año primero, revisar el archivo y después ampliar el periodo.
-    run(Config(start_year=2020, end_year=2020))
+    run(Config(start_year=2020, end_year=2020, workers=1))
