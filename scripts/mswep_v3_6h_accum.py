@@ -72,8 +72,12 @@ class Config:
     # Archivos usados para validar tiempo del nombre vs tiempo interno.
     n_validate: int = 30
 
-    # Procesos en paralelo (uno por año). Con disco mecánico, no subir de 2.
-    workers: int = 2
+    # Procesos en paralelo (uno por año). En el SSD USB la ganancia se satura
+    # hacia 3 procesos (límite de E/S); más procesos solo consumen memoria.
+    workers: int = 3
+
+    # Reintentos por archivo horario ante errores de lectura (p. ej. USB).
+    read_retries: int = 2
 
     overwrite: bool = False
 
@@ -305,14 +309,26 @@ def region_indices(path: str, cfg: Config) -> dict:
 def make_reader(cfg: Config, reg: dict):
     """Devuelve read(path, tidx) -> ndarray (lat asc, lon) en mm."""
 
-    def read(path: str, tidx: int) -> np.ndarray:
+    def _read_once(path: str, tidx: int) -> np.ndarray:
 
         with xr.open_dataset(path, cache=False) as ds:
             da = ds[cfg.variable]
             sel = {reg["ylat"]: reg["jl"], reg["xlon"]: reg["il"]}
             if "time" in da.dims:
                 sel["time"] = tidx
-            a = da.isel(sel).transpose(reg["ylat"], reg["xlon"]).values.astype("float32")
+            return da.isel(sel).transpose(reg["ylat"], reg["xlon"]).values.astype("float32")
+
+    def read(path: str, tidx: int) -> np.ndarray:
+
+        # Reintentos: distingue fallas transitorias de E/S (USB) de archivos dañados.
+        for attempt in range(cfg.read_retries + 1):
+            try:
+                a = _read_once(path, tidx)
+                break
+            except (OSError, RuntimeError, KeyError, ValueError):
+                if attempt == cfg.read_retries:
+                    raise
+                time.sleep(2.0 * (attempt + 1))
 
         if reg["flip"]:
             a = a[::-1, :]
@@ -329,10 +345,12 @@ def make_reader(cfg: Config, reg: dict):
 # ============================================================================
 
 
-def accumulate_windows(ends, lookup: dict, read_fn, shape: tuple, time_label: str, progress: bool = False):
+def accumulate_windows(ends, lookup: dict, read_fn, shape: tuple, time_label: str, progress: bool = False,
+                       errors: list | None = None):
     """
     Suma 6 campos horarios por ventana.
-    Ventana incompleta -> NaN. NaN de un píxel se propaga a la ventana.
+    Ventana incompleta o con archivo ilegible -> NaN. NaN de un píxel se propaga a la ventana.
+    Los archivos ilegibles se anotan en `errors` como (T, path, mensaje).
     """
 
     out = np.full((len(ends), *shape), np.nan, dtype="float32")
@@ -344,8 +362,14 @@ def accumulate_windows(ends, lookup: dict, read_fn, shape: tuple, time_label: st
             missing.append(T)
             continue
         acc = np.zeros(shape, dtype="float32")
-        for path, tidx in locs:
-            acc += read_fn(path, tidx)
+        try:
+            for path, tidx in locs:
+                acc += read_fn(path, tidx)
+        except (OSError, RuntimeError, KeyError, ValueError) as e:
+            missing.append(T)
+            if errors is not None:
+                errors.append((T, path, f"{type(e).__name__}: {e}"))
+            continue
         out[k] = acc
 
     return out, missing
@@ -397,10 +421,15 @@ def accumulate_year(year: int, cfg: Config, index_year: pd.DataFrame, time_label
     reg = region_indices(index_year["path"].iloc[0], cfg)
     ends = window_ends(year)
 
+    errors: list = []
     data, missing = accumulate_windows(
         ends, lookup, make_reader(cfg, reg), (reg["lat"].size, reg["lon"].size), time_label,
-        progress=cfg.workers <= 1,
+        progress=cfg.workers <= 1, errors=errors,
     )
+
+    if errors:
+        pd.DataFrame(errors, columns=["window_end", "path", "error"]).to_csv(
+            os.path.join(cfg.out_dir, f"bad_files_{year}.csv"), index=False)
 
     write_year(out, data, ends, reg["lat"], reg["lon"], {
         "framework": "ITCHI-CORE",
@@ -409,10 +438,15 @@ def accumulate_year(year: int, cfg: Config, index_year: pd.DataFrame, time_label
         "season": "May-Nov",
         "n_windows": len(ends),
         "n_missing_windows": len(missing),
+        "n_unreadable_files": len(errors),
+        "unreadable_files": ";".join(os.path.basename(p) for _, p, _ in errors) or "none",
         "history": f"scripts/mswep_v3_6h_accum.py {datetime.now(timezone.utc):%Y-%m-%dT%H:%MZ}",
     })
 
-    return f"{year}: {len(ends) - len(missing)}/{len(ends)} ventanas completas"
+    msg = f"{year}: {len(ends) - len(missing)}/{len(ends)} ventanas completas"
+    if errors:
+        msg += f" | {len(errors)} archivo(s) ilegible(s): ver bad_files_{year}.csv"
+    return msg
 
 
 # ============================================================================
@@ -473,8 +507,12 @@ def run(cfg: Config = Config()) -> None:
     else:
         with ProcessPoolExecutor(max_workers=cfg.workers) as ex:
             futs = [ex.submit(accumulate_year, y, cfg, idx, label) for y, idx in jobs.items()]
+            years_of = dict(zip(futs, jobs))
             for f in tqdm(as_completed(futs), total=len(futs), desc="Años", unit="año"):
-                print(f.result())
+                try:
+                    print(f.result())
+                except Exception as e:  # el año falla, los demás siguen
+                    print(f"{years_of[f]}: FALLÓ ({type(e).__name__}: {e}); volver a ejecutar para reintentar")
 
     print("\n" + "=" * 75)
     print(f"PROCESO TERMINADO · {(time.time() - t0) / 60:.1f} minutos · salida: {cfg.out_dir}")
@@ -487,4 +525,5 @@ def run(cfg: Config = Config()) -> None:
 
 if __name__ == "__main__":
 
-    run(Config(start_year=2000, end_year=2025, time_label="start", workers=2))
+    # Los años ya escritos en out_dir se omiten: se puede relanzar tras una interrupción.
+    run(Config(start_year=2000, end_year=2025, time_label="start", workers=3))

@@ -238,4 +238,5 @@ def run(cfg: Config = Config()) -> xr.Dataset:
 
 if __name__ == "__main__":
 
+    # Climatología completa 2000–2025. by_hour=True duplica aprox. el tiempo de cálculo.
     out = run(Config(start_year=2000, end_year=2025, by_hour=True))
