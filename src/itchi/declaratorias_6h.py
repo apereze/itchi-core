@@ -23,7 +23,8 @@ Agregación:
 
     paso      (declaratoria, T): P sobre los píxeles del municipio
               (máximo, media, fracción de área sobre cada percentil).
-    evento    (declaratoria): máximo de los pasos -> P_evento (pico de 6 h).
+    evento    (declaratoria): máximo de los pasos -> P_evento (pico de 6 h) y su
+              distancia en mm a los percentiles del mismo píxel: dif_Pxx = P_evento - Pxx.
     municipio mínimo de P_evento entre todas sus declaratorias.
     píxel     mínimo entre declaratorias del máximo de 6 h en ese píxel.
 
@@ -36,6 +37,10 @@ Salidas (outputs/diagnostics/declaratorias_6h/):
     declaratorias_ct_eventos.csv
     declaratorias_ct_municipios.csv  (+ .gpkg si hay driver)
     declaratorias_ct_pixel_min.nc
+    declaratorias_ct_pixel_decl.csv.gz    declaratoria x píxel: máximo de 6 h, hora y CT
+    declaratorias_ct_pixel_stats.nc       por píxel y tipo: n, mín, mediana, media, máx + Identificador
+    declaratorias_ct_municipios_stats.csv por municipio y tipo: mín, mediana, media, máx + declaratoria/CT
+    declaratorias_ct_por_ciclon.csv       por CT: declaratorias asociadas y su lluvia
     qc_claves_sin_geometria.csv
 
 Ejecutar desde scripts/:
@@ -56,8 +61,7 @@ import pandas as pd
 import xarray as xr
 from tqdm.auto import tqdm
 
-REPO = Path(__file__).resolve().parents[1]
-
+REPO = Path("/mnt/c/Users/adolf/Documents/ITCHI/itchi-core")
 # ============================================================================
 # CONFIGURACIÓN
 # ============================================================================
@@ -104,6 +108,12 @@ class Config:
 
     max_dist_km: float | None = None
     require_inside_rocloud: bool = False
+
+    # Tolerancia temporal: días que se agregan antes de Fecha Inicio y después de
+    # Fecha Fin (0 = como en el artículo). Hay declaratorias cuyas fechas no cubren
+    # el impacto (p. ej. Delta 2020: declaratoria 5-6 oct, entrada a tierra 7 oct).
+    dias_antes: int = 0
+    dias_despues: int = 0
 
     # ------------------------------------------------------------------------
     # Ventana de análisis (México); acelera la lectura
@@ -175,12 +185,13 @@ def load_declaratorias(cfg: Config) -> pd.DataFrame:
     return tc.reset_index(drop=True)
 
 
-def expand_6h(decl: pd.DataFrame) -> pd.DataFrame:
-    """[fecha_inicio, fecha_fin] -> 00/06/12/18 UTC (como generar_series_6h)."""
+def expand_6h(decl: pd.DataFrame, dias_antes: int = 0, dias_despues: int = 0) -> pd.DataFrame:
+    """[fecha_inicio - dias_antes, fecha_fin + dias_despues] -> 00/06/12/18 UTC (como generar_series_6h)."""
 
     steps = decl[["id_decl", "CVEGEO", "fecha_inicio", "fecha_fin"]].copy()
+    d0, d1 = pd.Timedelta(days=dias_antes), pd.Timedelta(days=dias_despues)
     steps["time"] = [
-        pd.date_range(a.normalize(), b.normalize() + pd.Timedelta(hours=18), freq="6h")
+        pd.date_range(a.normalize() - d0, b.normalize() + d1 + pd.Timedelta(hours=18), freq="6h")
         for a, b in zip(steps["fecha_inicio"], steps["fecha_fin"])
     ]
 
@@ -374,6 +385,8 @@ def step_stats(arr: np.ndarray, qpix: np.ndarray, labels: list[str]) -> pd.DataF
     }
     for k, lab in enumerate(labels):
         out[f"{lab}_pixel_max"] = qpix[k, imax]
+        # distancia (mm) entre la lluvia observada y el percentil local del mismo píxel
+        out[f"dif_{lab}"] = np.where(valid, pmax - qpix[k, imax], np.nan)
         out[f"frac_area_ge_{lab}"] = np.where(valid, frac[:, k], np.nan)
 
     return pd.DataFrame(out)
@@ -413,7 +426,7 @@ def run(cfg: Config = Config()) -> dict:
     # ------------------------------------------------------------------ 2
     print("\n[2/5] Expansión a 6 h y asociación con posiciones de CT")
 
-    steps = expand_6h(decl)
+    steps = expand_6h(decl, cfg.dias_antes, cfg.dias_despues)
     pasos = associate_tracks(steps, tracks, municipio_points(gdf), cfg)
     print(f"Pasos declaratoria x 6 h: {len(steps):,} | con CT activo: {len(pasos):,} "
           f"| declaratorias con >= 1 paso: {pasos['id_decl'].nunique():,}")
@@ -441,6 +454,7 @@ def run(cfg: Config = Config()) -> dict:
     # 1 dic 00 UTC está en el archivo del mismo año (última ventana de la temporada)
     pasos["year"] = pasos["time"].dt.year
     results = []
+    rec = []   # (declaratoria, píxel): máximo de 6 h en el píxel durante la declaratoria
 
     for year, py in tqdm(pasos.groupby("year"), desc="Años", unit="año"):
 
@@ -478,14 +492,19 @@ def run(cfg: Config = Config()) -> dict:
 
             # Producto por píxel: máximo de 6 h por declaratoria, luego mínimo entre declaratorias
             row_of = {t: k for k, t in enumerate(ut)}
-            for _, pe in pm.groupby("id_decl"):
-                ev = arr[[row_of[t] for t in pe["time"]]]
+            for idd, pe in pm.groupby("id_decl"):
+                tt = pd.DatetimeIndex(pe["time"])
+                ev = arr[[row_of[t] for t in tt]]
                 if not np.isfinite(ev).any():
                     continue
-                ev_max = np.nanmax(np.where(np.isfinite(ev), ev, np.nan), axis=0)
+                evf = np.where(np.isfinite(ev), ev, -np.inf)
+                kmax = evf.argmax(axis=0)                              # paso del máximo en cada píxel
+                ev_max = evf[kmax, np.arange(ev.shape[1])]
                 ok = np.isfinite(ev_max)
                 pix_min[flat[ok]] = np.minimum(pix_min[flat[ok]], ev_max[ok])
                 pix_n[flat[ok]] += 1
+                rec.append(pd.DataFrame({"id_decl": idd, "ipix": flat[ok], "P6_pix": ev_max[ok],
+                                         "t_max_pix": tt[kmax[ok]]}))
 
     stats = pd.concat(results, ignore_index=True) if results else pd.DataFrame(columns=["CVEGEO", "time"])
     pasos = pasos.drop(columns="year").merge(stats, on=["CVEGEO", "time"], how="left")
@@ -509,7 +528,8 @@ def run(cfg: Config = Config()) -> dict:
 
     pk_cols = ["time", "CT", "dist_km", "dentro_rocloud", "dentro_Rp", "P_max", "P_media",
                "nivel_pixel_max", "nivel_max_area", "lat_pmax", "lon_pmax"] + \
-              [f"{l}_pixel_max" for l in labels] + [f"frac_area_ge_{l}" for l in labels]
+              [f"{l}_pixel_max" for l in labels] + [f"dif_{l}" for l in labels] + \
+              [f"frac_area_ge_{l}" for l in labels]
     peak = peak[pk_cols].rename(columns={"time": "t_pico", "CT": "CT_pico", "dist_km": "dist_pico_km",
                                          "dentro_rocloud": "dentro_rocloud_pico", "dentro_Rp": "dentro_Rp_pico",
                                          "P_max": "P_evento", "P_media": "P_media_pico",
@@ -520,7 +540,15 @@ def run(cfg: Config = Config()) -> dict:
     eventos["clase_pico"] = level_label(eventos["nivel_pico"], labels)
     eventos = eventos.reset_index()
 
+    # Lluvia por píxel y declaratoria (sin umbrales)
+    pix_decl = build_pixel_decl(rec, eventos, pasos, lat, lon, nx)
+    areal = pix_decl.groupby("id_decl")["P6_pix"].mean().rename("P_evento_areal")
+    eventos = eventos.merge(areal, left_on="id_decl", right_index=True, how="left")
+
     municipios = summarize_municipios(eventos, gdf, pix, Qflat, labels)
+    ds_stats = pixel_stats(pix_decl, Q, cfg)
+    mun_stats = municipio_stats(eventos, gdf)
+    ciclones = ciclon_stats(eventos)
 
     pix_min = np.where(pix_n > 0, pix_min, np.nan).reshape(ny, nx)
     ds_pix = pixel_product(pix_min, pix_n.reshape(ny, nx), Q, labels, cfg)
@@ -540,24 +568,165 @@ def run(cfg: Config = Config()) -> dict:
         print(f"  Aviso: no se escribió el GPKG ({type(e).__name__}: {e})")
     ds_pix.to_netcdf(f_pix, encoding={v: {"zlib": True, "complevel": 4} for v in ds_pix.data_vars})
 
+    pix_decl.to_csv(os.path.join(cfg.out_dir, "declaratorias_ct_pixel_decl.csv.gz"), index=False, float_format="%.3f")
+    ds_stats.to_netcdf(os.path.join(cfg.out_dir, "declaratorias_ct_pixel_stats.nc"),
+                       encoding={v: {"zlib": True, "complevel": 4} for v in ds_stats.data_vars})
+    mun_stats.to_csv(os.path.join(cfg.out_dir, "declaratorias_ct_municipios_stats.csv"), index=False,
+                     float_format="%.3f")
+    ciclones.to_csv(os.path.join(cfg.out_dir, "declaratorias_ct_por_ciclon.csv"), index=False, float_format="%.3f")
+
     ok = eventos["P_evento"].notna()
     print(f"\nDeclaratorias con datos: {ok.sum():,} | municipios: {municipios['n_decl'].gt(0).sum():,}")
     print(f"P_evento (mm/6 h): mín {eventos.loc[ok, 'P_evento'].min():.1f} | "
           f"P10 {eventos.loc[ok, 'P_evento'].quantile(0.1):.1f} | "
           f"mediana {eventos.loc[ok, 'P_evento'].median():.1f}")
-    print("Clase del pico (percentil local superado en el píxel del máximo):")
-    print(eventos.loc[ok, "clase_pico"].value_counts().reindex(level_names(labels), fill_value=0).to_string())
+    print("Distancia al percentil local en el píxel del pico (P_evento - Pxx, mm/6 h):")
+    e = eventos.loc[ok]
+    print(pd.DataFrame({
+        "mediana": [e[f"dif_{l}"].median() for l in labels],
+        "P10": [e[f"dif_{l}"].quantile(0.1) for l in labels],
+        "% bajo el percentil": [100 * (e[f"dif_{l}"] < 0).mean() for l in labels],
+    }, index=labels).astype(float).round(1).to_string())
 
     print("\n" + "=" * 75)
     print(f"PROCESO TERMINADO · {(time.time() - t0) / 60:.1f} minutos · {cfg.out_dir}")
     print("=" * 75)
 
-    return {"pasos": pasos, "eventos": eventos, "municipios": municipios, "pixel": ds_pix}
+    return {"pasos": pasos, "eventos": eventos, "municipios": municipios, "pixel": ds_pix,
+            "pixel_decl": pix_decl, "pixel_stats": ds_stats, "municipios_stats": mun_stats, "ciclones": ciclones}
 
 
 # ============================================================================
 # RESÚMENES
 # ============================================================================
+
+
+TIPOS = ("Emergencia", "Desastre", "Contingencia Climatológica")
+ESTADISTICOS = {"min": "min", "mediana": "median", "media": "mean", "max": "max"}
+
+
+def build_pixel_decl(rec, eventos, pasos, lat, lon, nx) -> pd.DataFrame:
+    """
+    Tabla larga (declaratoria x píxel del municipio): máximo de 6 h en el píxel durante
+    la declaratoria (ventanas con CT), hora de ese máximo y CT activo a esa hora.
+    """
+
+    cols = ["id_decl", "ipix", "P6_pix", "t_max_pix"]
+    d = pd.concat(rec, ignore_index=True) if rec else pd.DataFrame(columns=cols)
+    d["lat"] = lat[d["ipix"].astype(int) // nx]
+    d["lon"] = lon[d["ipix"].astype(int) % nx]
+
+    info = eventos[["id_decl", "Identificador", "Tipo Declaratoria", "CVEGEO", "Municipio", "Estado"]]
+    d = d.merge(info, on="id_decl", how="left")
+
+    ct = pasos[["id_decl", "time", "CT", "dist_km"]].rename(columns={"time": "t_max_pix", "CT": "CT_t_max",
+                                                                     "dist_km": "dist_t_max_km"})
+    d = d.merge(ct, on=["id_decl", "t_max_pix"], how="left")
+
+    return d[["id_decl", "Identificador", "Tipo Declaratoria", "CVEGEO", "Municipio", "Estado", "ipix",
+              "lat", "lon", "P6_pix", "t_max_pix", "CT_t_max", "dist_t_max_km"]]
+
+
+def pixel_stats(pix_decl: pd.DataFrame, Q: xr.DataArray, cfg) -> xr.Dataset:
+    """
+    Por píxel y tipo de declaratoria: número de declaratorias y mínimo, mediana, media y
+    máximo (entre declaratorias) del máximo de 6 h en el píxel, sin umbrales. Se guarda
+    el Identificador de la declaratoria con el mínimo y con el máximo.
+    """
+
+    ny, nx = Q.sizes["lat"], Q.sizes["lon"]
+    tipos = ["todas"] + [t for t in TIPOS if (pix_decl["Tipo Declaratoria"] == t).any()]
+
+    out = {k: np.full((len(tipos), ny * nx), np.nan, dtype="float32") for k in ESTADISTICOS}
+    n = np.zeros((len(tipos), ny * nx), dtype="int32")
+    id_min = np.full((len(tipos), ny * nx), -1, dtype="int32")
+    id_max = np.full((len(tipos), ny * nx), -1, dtype="int32")
+
+    for k, t in enumerate(tipos):
+        d = pix_decl if t == "todas" else pix_decl[pix_decl["Tipo Declaratoria"] == t]
+        if d.empty:
+            continue
+        g = d.groupby("ipix")["P6_pix"]
+        idx = g.size().index.values
+        n[k, idx] = g.size().values
+        for name, f in ESTADISTICOS.items():
+            out[name][k, idx] = g.agg(f).values
+        id_min[k, idx] = d.loc[g.idxmin().values, "Identificador"].values
+        id_max[k, idx] = d.loc[g.idxmax().values, "Identificador"].values
+
+    dims = ("tipo", "lat", "lon")
+    coords = {"tipo": tipos, "lat": Q["lat"].values, "lon": Q["lon"].values}
+    ds = xr.Dataset(coords=coords)
+    ds["n_decl"] = (dims, n.reshape(len(tipos), ny, nx))
+    ds["n_decl"].attrs.update(units="1", long_name="declarations covering the pixel")
+    for name in ESTADISTICOS:
+        ds[f"P_{name}"] = (dims, out[name].reshape(len(tipos), ny, nx))
+        ds[f"P_{name}"].attrs.update(units="mm (6 h)-1", long_name=f"{name} over declarations of the "
+                                                                   "per-declaration maximum 6-h precipitation")
+    ds["Identificador_min"] = (dims, id_min.reshape(len(tipos), ny, nx))
+    ds["Identificador_max"] = (dims, id_max.reshape(len(tipos), ny, nx))
+    for v in ("Identificador_min", "Identificador_max"):
+        ds[v].attrs.update(_FillValue=-1, long_name=f"CENAPRED Identificador of the declaration giving P_{v[-3:]}")
+
+    ds.attrs.update(framework="ITCHI-CORE",
+                    description="Per-pixel 6-h precipitation during TC-associated declarations (no thresholds)",
+                    history=f"scripts/declaratorias_6h.py {pd.Timestamp.now(tz='UTC'):%Y-%m-%dT%H:%MZ}")
+    return ds
+
+
+def _stats_con_id(e: pd.DataFrame, var: str) -> dict:
+
+    x = e[var]
+    if x.notna().sum() == 0:
+        return {}
+    i0, i1 = x.idxmin(), x.idxmax()
+    r = {f"{var}_{k}": x.agg(f) for k, f in ESTADISTICOS.items()}
+    r.update({f"{var}_Identificador_min": e.at[i0, "Identificador"], f"{var}_CT_min": e.at[i0, "CT_pico"],
+              f"{var}_t_min": e.at[i0, "t_pico"],
+              f"{var}_Identificador_max": e.at[i1, "Identificador"], f"{var}_CT_max": e.at[i1, "CT_pico"],
+              f"{var}_t_max": e.at[i1, "t_pico"]})
+    return r
+
+
+def municipio_stats(eventos: pd.DataFrame, gdf) -> pd.DataFrame:
+    """
+    Por municipio y tipo: mínimo, mediana, media y máximo entre declaratorias de
+    P_evento (máximo en el municipio) y P_evento_areal (media de los píxeles), con la
+    declaratoria y el CT del mínimo y del máximo, y la lista de declaratorias.
+    """
+
+    ev = eventos[eventos["P_evento"].notna()]
+    rows = []
+    for t in ["todas"] + list(TIPOS):
+        d = ev if t == "todas" else ev[ev["Tipo Declaratoria"] == t]
+        for code, e in d.groupby("CVEGEO"):
+            r = {"tipo": t, "CVEGEO": code, "n_decl": len(e),
+                 "identificadores": ";".join(map(str, sorted(e["Identificador"].unique()))),
+                 "ciclones": ";".join(sorted(e["CT_pico"].dropna().unique()))}
+            r.update(_stats_con_id(e, "P_evento"))
+            r.update(_stats_con_id(e, "P_evento_areal"))
+            rows.append(r)
+
+    out = pd.DataFrame(rows)
+    names = pd.DataFrame(gdf[["CVEGEO", "NOMGEO", "NOM_ENT"]])
+    return names.merge(out, on="CVEGEO", how="right")
+
+
+def ciclon_stats(eventos: pd.DataFrame) -> pd.DataFrame:
+    """Por CT (el más cercano en el pico de cada declaratoria): declaratorias asociadas y su lluvia."""
+
+    ev = eventos[eventos["P_evento"].notna()]
+    rows = []
+    for ct, e in ev.groupby("CT_pico"):
+        r = {"CT": ct, "n_decl": len(e), "n_municipios": e["CVEGEO"].nunique(),
+             **{f"n_{t.split()[0].lower()}": int((e["Tipo Declaratoria"] == t).sum()) for t in TIPOS},
+             "estados": ";".join(sorted(e["Estado"].unique())),
+             "identificadores": ";".join(map(str, sorted(e["Identificador"].unique()))),
+             "observaciones": " | ".join(e["Observaciones"].drop_duplicates().head(5)),
+             "fecha_inicio_min": e["fecha_inicio"].min(), "fecha_fin_max": e["fecha_fin"].max()}
+        r.update({f"P_evento_{k}": e["P_evento"].agg(f) for k, f in ESTADISTICOS.items()})
+        rows.append(r)
+    return pd.DataFrame(rows).sort_values("fecha_inicio_min")
 
 
 def level_names(labels: list[str]) -> list[str]:
@@ -601,6 +770,10 @@ def summarize_municipios(eventos: pd.DataFrame, gdf, pix: dict, Qflat: np.ndarra
         "clase_min": at_min["clase_pico"],
         "P_min_sobre_P95": at_min["P_evento_sobre_P95"],
     })
+    # Percentiles del píxel donde ocurrió el mínimo y distancia (mm) a cada uno
+    for lab in labels:
+        s[f"{lab}_pixel_min"] = at_min[f"{lab}_pixel_max"]
+        s[f"dif_min_{lab}"] = at_min[f"dif_{lab}"]
     for c in ("n_emergencia", "n_desastre"):
         s[c] = s[c].fillna(0).astype(int)
 
@@ -641,15 +814,18 @@ def pixel_product(pix_min, pix_n, Q: xr.DataArray, labels: list[str], cfg: Confi
             flag_meanings=" ".join(level_names(labels))),
     })
     for k, lab in enumerate(labels):
-        ds[f"P_min_sobre_{lab}"] = (pmin / Q.isel(quantile=k).where(Q.isel(quantile=k) > 0)).astype(
-            "float32").drop_vars("quantile").assign_attrs(units="1")
+        qk = Q.isel(quantile=k).drop_vars("quantile")
+        ds[f"P_min_menos_{lab}"] = (pmin - qk).astype("float32").assign_attrs(
+            units="mm (6 h)-1", long_name=f"P_min_decl minus local {lab}")
+        ds[f"P_min_sobre_{lab}"] = (pmin / qk.where(qk > 0)).astype("float32").assign_attrs(units="1")
 
     ds.attrs.update(
         framework="ITCHI-CORE",
         source="MSWEP V3 6-h accumulations (T-6h, T]; CENAPRED declarations; ROCLOUD tracks",
         percentiles=f"{Path(cfg.percentiles_file).name}:{cfg.pct_var}",
-        association=("time match with any active TC" if cfg.max_dist_km is None and not cfg.require_inside_rocloud
-                     else f"time match; max_dist_km={cfg.max_dist_km}; inside_rocloud={cfg.require_inside_rocloud}"),
+        association=(f"time match with nearest active TC; dias_antes={cfg.dias_antes}; "
+                     f"dias_despues={cfg.dias_despues}; max_dist_km={cfg.max_dist_km}; "
+                     f"inside_rocloud={cfg.require_inside_rocloud}; solo_lluvia={cfg.solo_lluvia}"),
         history=f"scripts/declaratorias_6h.py {pd.Timestamp.now(tz='UTC'):%Y-%m-%dT%H:%MZ}",
     )
 
