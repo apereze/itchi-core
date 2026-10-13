@@ -13,7 +13,8 @@ fields:
 - ``lat`` and ``lon`` as storm-center coordinates;
 - ``usa_wind`` as maximum sustained wind;
 - ``usa_pres`` as minimum central pressure;
-- ``usa_rmw`` as radius of maximum wind;
+- ``usa_rmw`` as radius of maximum wind (nautical miles in IBTrACS,
+  converted to km on output);
 - ``usa_r34`` as 34-kt wind radii by quadrant.
 
 The output is a pandas DataFrame compatible with
@@ -31,7 +32,7 @@ import pandas as pd
 import xarray as xr
 
 from itchi.tracks import standardize_track_dataframe
-from itchi.units import normalize_quadrant_key
+from itchi.units import convert_radius_to_km, normalize_quadrant_key
 
 DEFAULT_IBTRACS_VARIABLE_MAP: dict[str, str] = {
     "storm_id": "sid",
@@ -443,6 +444,7 @@ def ibtracs_to_track_dataframe(
     time_dim: str | None = None,
     drop_missing_core: bool = True,
     standardize: bool = True,
+    rmw_unit: str = "nm",
 ) -> pd.DataFrame:
     """
     Convert one IBTrACS storm to the internal ITCHI track DataFrame.
@@ -467,6 +469,9 @@ def ibtracs_to_track_dataframe(
     standardize : bool, default=True
         Whether to pass the resulting table through
         ``standardize_track_dataframe``.
+    rmw_unit : str, default="nm"
+        Unit of the source RMW variable. IBTrACS ``usa_rmw`` is reported in
+        nautical miles; the output column ``rmw_km`` is always in km.
 
     Returns
     -------
@@ -532,6 +537,10 @@ def ibtracs_to_track_dataframe(
         if values is not None:
             frame_data[output_name] = values
 
+    if "rmw_km" in frame_data:
+        rmw_values = np.asarray(frame_data["rmw_km"], dtype=float)
+        frame_data["rmw_km"] = convert_radius_to_km(rmw_values, rmw_unit)
+
     r34_variable = _get_variable_name(resolved_variable_map, "r34", required=False)
     frame_data.update(
         _extract_r34_columns(
@@ -562,6 +571,7 @@ def read_ibtracs_track_dataframe(
     time_dim: str | None = None,
     engine: str | None = None,
     decode_times: bool = False,
+    rmw_unit: str = "nm",
     **kwargs: Any,
 ) -> pd.DataFrame:
     """
@@ -585,6 +595,7 @@ def read_ibtracs_track_dataframe(
             r34_quadrants=r34_quadrants,
             storm_dim=storm_dim,
             time_dim=time_dim,
+            rmw_unit=rmw_unit,
         )
     finally:
         dataset.close()

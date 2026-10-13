@@ -60,8 +60,7 @@ dependencies:
   - pytest
   - black
   - isort
-  - ruff
-  - pre-commit
+ 
 
   # ============================================================
   # Pip-only packages, if needed later
