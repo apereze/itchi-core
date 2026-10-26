@@ -7,7 +7,13 @@
 
 **Integrated Tropical Cyclone Hazard Index**
 
-Repository for the development of the computational core of **ITCHI v0.1**, a physically based tropical-cyclone hazard index.
+Repository for the development of the computational core of **ITCHI**, a physically based tropical-cyclone hazard index. Current version: **0.2.0**.
+
+**What is new in v0.2** (opt-in; defaults reproduce v0.1, see `CHANGELOG.md` and `docs/methodology.md`):
+
+- Precipitation hazard as a continuous **P6 × A72 matrix**: the 6-h snapshot against its percentiles (R4 ramp: Q75/Q90/Q95/Q99) escalated by the exclusive 72-h antecedent rain against its own percentiles (`compute_precipitation_matrix_hazard`).
+- **W06 wind with an outer tail**: W06 profile calibrated to the observed R34, normalized by quadrant, with hazard decaying from `h34` at R34 to zero at the attribution radius; the tail enters the indirect component (`wind_model="w06_tail"`).
+- Scripts for 6/24/72-h MSWEP V3.16 climatologies, disaster-declaration analysis and municipality–cyclone verification pairs.
 
 ---
 

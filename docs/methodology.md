@@ -1,4 +1,4 @@
-# ITCHI v0.1 Methodology
+# ITCHI Methodology (v0.1 and v0.2)
 
 > **Integrated Tropical Cyclone Hazard Index** — A bounded physical hazard index for tropical cyclone conditions combining wind and precipitation hazards on a geospatial grid.
 
@@ -430,6 +430,86 @@ ITCHI outputs must satisfy the following quality-control rules:
 | QC-5 | Direct, indirect, and exterior masks are mutually disjoint |
 | QC-6 | Spatial fields preserve dimensions and coordinates |
 | QC-7 | All geometric radii are in kilometers before mask construction |
+
+---
+
+## ITCHI v0.2 Extensions
+
+ITCHI v0.2 keeps the regions, masks and bounded unions of v0.1 and changes
+the precipitation and wind hazards. Both changes are opt-in in the pipeline
+(`precipitation_hazard`, `wind_model="w06_tail"`).
+
+### Precipitation: P6 × A72 matrix
+
+Two supports are combined, each against its own local percentiles (MSWEP
+V3.16, May–November, wet windows):
+
+| Symbol | Definition |
+|:-------|:-----------|
+| $P_6(T)$ | Precipitation in $(T-6\,\mathrm{h}, T]$ |
+| $A_{72}(T)$ | Exclusive antecedent: precipitation in $(T-78\,\mathrm{h}, T-6\,\mathrm{h}]$, $A_{72}(T) = R_{72}(T-6\,\mathrm{h})$ |
+
+For each column $c$, anchored at an $A_{72}$ percentile $Q^{72}_c$, the
+hazard $H_c(P_6)$ is a piecewise-linear ramp through the nodes
+$(0, h_{c,0}), (Q^{6}_{75}, h_{c,1}), (Q^{6}_{90}, h_{c,2}), (Q^{6}_{95}, h_{c,3}), (Q^{6}_{99}, h_{c,4})$,
+constant above $Q^6_{99}$. Columns are interpolated linearly in $A_{72}$:
+
+$$
+H_P = H_{c_k} + \left(H_{c_{k+1}} - H_{c_k}\right)
+\frac{A_{72} - Q^{72}_{c_k}}{Q^{72}_{c_{k+1}} - Q^{72}_{c_k}},
+\qquad Q^{72}_{c_k} \le A_{72} < Q^{72}_{c_{k+1}}
+$$
+
+with the first column below the first anchor and the last column above the
+last one. Provisional nodes:
+
+| $A_{72}$ anchor | 0 mm | $Q^6_{75}$ | $Q^6_{90}$ | $Q^6_{95}$ | $Q^6_{99}$ |
+|:--|--:|--:|--:|--:|--:|
+| $Q^{72}_{75}$ (no antecedent, R4) | 0 | 0 | 0.25 | 0.5 | 1 |
+| $Q^{72}_{90}$ | 0 | 0.25 | 0.375 | 0.5 | 1 |
+| $Q^{72}_{95}$ (very wet) | 0.125 | 0.25 | 0.5 | 1 | 1 |
+
+$H_P$ is non-decreasing in $P_6$ and in $A_{72}$. Where $A_{72}$ is missing
+(first 72 h of a season) the no-antecedent column is used. Only $Q^{72}_{75}$,
+$Q^{72}_{90}$ and $Q^{72}_{95}$ are used because 72-h windows overlap and
+P99/P99.9 of $A_{72}$ are not robust.
+
+### Wind: W06 profile with outer tail
+
+The W06 profile (Willoughby et al. 2006) is fitted to $V_{\max}$, latitude,
+RMW and, when available, the observed azimuthal-mean $R_{34}$ (outer decay
+length $X_1$ such that $V(\bar R_{34}) = 34$ kt). The radius is scaled by
+$s_q = \bar R_{34} / R_{\text{direct},q}$ so that $V = 34$ kt at each
+quadrant's $R_{\text{direct},q}$. With $V_{34} = 34$ kt and
+$V_{\text{out},q} = V(s_q\,R_{\text{attr},q})$:
+
+$$
+H_W =
+\begin{cases}
+h_{34} + (1 - h_{34})\,\mathrm{clip}\!\left(\dfrac{V - V_{34}}{V_{\max} - V_{34}}\right), & r \le R_{\text{direct},q} \\[10pt]
+h_{34}\,\mathrm{clip}\!\left(\dfrac{V - V_{\text{out},q}}{V_{34} - V_{\text{out},q}}\right), & R_{\text{direct},q} < r \le R_{\text{attr},q}
+\end{cases}
+$$
+
+$H_W$ is continuous at $R_{\text{direct},q}$ (value $h_{34}$) and vanishes at
+$R_{\text{attr},q}$. For $V_{\max} \le 34$ kt only the tail applies, so
+$H_W < h_{34}$. Default $h_{34} = 0.2$: below 34 kt sustained, wind damage is
+small, and the tail alone stays in the lowest SIAT-style class.
+
+### Indirect component
+
+$$
+H_{\text{ind}} = 1 - (1 - H_{W,\text{ind}})(1 - H_{P,\text{ind}})
+$$
+
+The direct component and the final index keep the v0.1 formulas.
+
+### Calibration status
+
+Matrix nodes and $h_{34}$ are provisional. They are calibrated with
+municipality–cyclone pairs inside the W06 (PA21) radius, labelled with
+TC-associated disaster declarations (`scripts/negativos_w06.py`: POD, FAR,
+POFD, Peirce skill score by hazard level).
 
 ---
 

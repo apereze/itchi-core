@@ -7,6 +7,56 @@ and this project uses semantic versioning principles while the API is under acti
 
 ---
 
+## [0.2.0] - 2026-10-26
+
+ITCHI v0.2 keeps the v0.1 structure (direct, indirect and exterior regions;
+bounded unions) and changes the precipitation and wind hazards. All v0.2
+options are opt-in in the pipeline; the defaults reproduce v0.1.
+
+### Added
+
+- `precipitation.compute_precipitation_hazard_ramp`: general node ramp
+  (R3 = Q90/Q95/Q99 reproduces v0.1; `RAMP_R4_NODES` = Q75/Q90/Q95/Q99).
+- `precipitation.compute_precipitation_matrix_hazard`: continuous P6 x A72
+  matrix (`PRECIP_MATRIX_V02`). Columns anchored at Q75/Q90/Q95 of the 72-h
+  climatology, interpolated linearly in A72; without antecedent rain it is R4.
+  Node values are provisional pending calibration.
+- `precipitation.compute_antecedent_precipitation`: exclusive antecedent
+  A_d(T) over (T-d-6h, T-6h] or running sum R_d(T), NaN across gaps.
+- `wind.normalize_wind_hazard_with_tail` and
+  `parametric_radii.compute_w06_wind_hazard_with_tail`: W06 wind calibrated to
+  the observed mean R34, quadrant-normalized radius (V = 34 kt at each
+  R_direct_q), hazard h34 + (1 - h34)(V - 34)/(Vmax - 34) inside R_direct and a
+  tail h34 (V - V_out)/(34 - V_out) that vanishes at the attribution radius.
+- `components`: optional indirect wind; H_ind = 1 - (1 - H_Wind)(1 - H_Pind).
+  Outputs `H_Wdir` and `H_Wind` when enabled.
+- `pipeline.compute_itchi_snapshot_from_grid`: `precipitation_hazard`,
+  `wind_model` ("v01" | "w06_tail"), `wind_tail_h34`, `r34_mean_km`,
+  `w06_profile_kwargs`; result reports `itchi_version`,
+  `precipitation_hazard_source` and W06 metadata.
+- `tests/test_v02.py`.
+- Scripts: MSWEP V3.16 6-h accumulations and 6/24/72-h percentiles with
+  effective-sample sufficiency (`scripts/percentiles_6h.py --durations`),
+  TC-associated disaster declarations vs 6/24/72-h rain
+  (`declaratorias_6h.py`), and municipality-cyclone verification pairs inside
+  the W06 (PA21) radius with positives and negatives (`negativos_w06.py`).
+
+### Changed
+
+- Version 0.2.0 (`pyproject.toml`, `constants.ITCHI_VERSION`, `configs/default.yaml`).
+- `configs/default.yaml` documents the v0.2 matrix and wind tail.
+- With `wind_model="w06_tail"`, tropical depressions get wind hazard below
+  h34 (v0.1 normalized V/Vmax inside the fallback direct radius).
+
+### Notes
+
+- The matrix nodes and h34 = 0.2 are provisional; calibrate them with the
+  municipality-cyclone pairs (POD, FAR, Peirce) before operational use.
+- 72-h P99/P99.9 are not robust (overlapping windows); the matrix only uses
+  Q75, Q90 and Q95 of A72.
+
+---
+
 ## [0.1.0] - Initial development version
 
 ### Added

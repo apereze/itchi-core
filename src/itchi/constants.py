@@ -12,7 +12,7 @@ from __future__ import annotations
 # ============================================================
 
 PROJECT_NAME: str = "itchi-core"
-ITCHI_VERSION: str = "0.1.0"
+ITCHI_VERSION: str = "0.2.0"
 
 
 # ============================================================

@@ -26,16 +26,42 @@ Nuevos:
 Nota: P75 sobre todas las ventanas es ~0 donde la frecuencia húmeda es
 < 25 %. P75 solo tiene sentido como p_wet, idealmente con un piso absoluto.
 
+Multiduración (duration_h = 6, 24, 72):
+
+    R_d(T) = suma de los acumulados de 6 h en (T-d, T], d múltiplo de 6 h,
+    calculada al vuelo dentro de cada temporada (no cruza dic -> may).
+    Una ventana con algún paso de 6 h faltante -> NaN. Al inicio de cada
+    temporada las primeras d/6 - 1 ventanas son NaN.
+
+    Ventana húmeda: R_d >= wet (1 mm por ventana, igual que 6 h).
+
+    El antecedente exclusivo A_d(T) = R_d(T - 6 h), en (T-d-6h, T-6h], tiene
+    la misma distribución que R_d: usa este mismo archivo de percentiles.
+
+    Las ventanas móviles se traslapan (d/6 por paso), así que el número
+    efectivo de muestras independientes es ~n/(d/6). El filtro de
+    suficiencia se aplica sobre ese número efectivo:
+        n_wet >= k_exc * (d/6) / (1 - q)
+    En 72 h, P99.9 queda fuera del filtro casi en todo el dominio
+    (p_wet = NaN); p_wet_raw lo conserva pero no es robusto.
+
+Salidas:
+    ../data/processed/mswep_v3_{d}h_percentiles_may_nov.nc
+    (d = 6 conserva el nombre original)
+
 Ejecutar desde scripts/:
-    python percentiles_6h.py
+    python percentiles_6h.py                      # 24 y 72 h
+    python percentiles_6h.py --durations 6 --by-hour
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
+import numpy as np
 import xarray as xr
 from dask.diagnostics import ProgressBar
 
@@ -60,8 +86,11 @@ class Config:
     start_year: int = 2000
     end_year: int = 2025
 
+    # Duración de la acumulación (h): múltiplo de 6
+    duration_h: int = 6
+
     # Ventana húmeda
-    wet: float = 1.0  # mm (6 h)-1
+    wet: float = 1.0  # mm por ventana de duration_h
 
     qs: tuple = (0.75, 0.90, 0.95, 0.99, 0.999)
 
@@ -72,15 +101,37 @@ class Config:
     # Hyndman & Fan tipo 8, igual que percentiles.py
     qmethod: str = "median_unbiased"
 
-    # Umbrales absolutos de referencia (mm (6 h)-1)
-    abs_thresholds: tuple = (10.0, 20.0, 35.0, 60.0)
+    # Umbrales absolutos de referencia (mm por ventana); None -> ABS_THRESHOLDS[duration_h]
+    abs_thresholds: tuple | None = None
 
-    # Estratificar por hora final de ventana (ciclo diurno)
+    # Estratificar por hora final de ventana (ciclo diurno); solo útil en 6 h
     by_hour: bool = False
 
     chunks: dict = field(default_factory=lambda: {"time": -1, "lat": 25, "lon": 25})
 
-    out_file: str = "../data/processed/mswep_v3_6h_percentiles_may_nov.nc"
+    # None -> ../data/processed/mswep_v3_{duration_h}h_percentiles_may_nov.nc
+    out_file: str | None = None
+
+    def __post_init__(self):
+        if self.duration_h % 6 or self.duration_h < 6:
+            raise ValueError(f"duration_h debe ser múltiplo de 6 h: {self.duration_h}")
+        if self.abs_thresholds is None:
+            self.abs_thresholds = ABS_THRESHOLDS.get(self.duration_h, ABS_THRESHOLDS[6])
+        if self.out_file is None:
+            self.out_file = f"../data/processed/mswep_v3_{self.duration_h}h_percentiles_may_nov.nc"
+
+    @property
+    def n_overlap(self) -> int:
+        # Ventanas de 6 h por acumulado: factor de traslape entre ventanas consecutivas
+        return self.duration_h // 6
+
+
+# Umbrales absolutos por duración (mm por ventana)
+ABS_THRESHOLDS = {
+    6: (10.0, 20.0, 35.0, 60.0),
+    24: (25.0, 50.0, 100.0, 150.0),
+    72: (50.0, 100.0, 200.0, 300.0),
+}
 
 
 # ============================================================================
@@ -109,6 +160,27 @@ def open_precip_6h(cfg: Config) -> xr.DataArray:
     return pr
 
 
+def rolling_accum(pr: xr.DataArray, hours: int) -> xr.DataArray:
+    """
+    R_d(T): suma de n = d/6 acumulados de 6 h en (T-d, T].
+    NaN si falta algún paso o si la ventana cruza el hueco dic -> may entre temporadas.
+    """
+
+    n = hours // 6
+    if n == 1:
+        return pr
+
+    acc = pr.rolling(time=n, min_periods=n).sum()
+
+    # Contigüidad: el paso más antiguo de la ventana está exactamente (n-1)·6 h antes
+    tv = pr["time"].values
+    ok = np.zeros(tv.size, dtype=bool)
+    ok[n - 1:] = (tv[n - 1:] - tv[:tv.size - (n - 1)]) == np.timedelta64(6 * (n - 1), "h")
+    contigua = xr.DataArray(ok, dims="time", coords={"time": pr["time"]})
+
+    return acc.where(contigua)
+
+
 # ============================================================================
 # DIAGNÓSTICOS ADICIONALES
 # ============================================================================
@@ -131,7 +203,8 @@ def frequency_fields(pr: xr.DataArray, cfg: Config) -> xr.Dataset:
 
 def percentile_fields(pr: xr.DataArray, cfg: Config) -> xr.Dataset:
 
-    q_raw, q_wet, n_wet, wet = wet_day_percentiles(pr, cfg)
+    # Suficiencia sobre el número efectivo de ventanas independientes (~n / (d/6))
+    q_raw, q_wet, n_wet, wet = wet_day_percentiles(pr, replace(cfg, k_exc=cfg.k_exc * cfg.n_overlap))
 
     return xr.Dataset({
         "p_wet": q_wet,
@@ -165,29 +238,37 @@ def by_hour_fields(pr: xr.DataArray, cfg: Config) -> xr.Dataset:
 
 def add_metadata(out: xr.Dataset, cfg: Config) -> xr.Dataset:
 
+    d = cfg.duration_h
+
     for v in [v for v in out.data_vars if v.startswith(("p_wet", "p_all"))]:
-        out[v].attrs.update(units="mm (6 h)-1", long_name=f"6-h precipitation percentile ({v})")
+        out[v].attrs.update(units=f"mm ({d} h)-1", long_name=f"{d}-h precipitation percentile ({v})")
 
     for v in [v for v in out.data_vars if v.startswith(("n_wet", "n_valid"))]:
-        out[v].attrs.update(units="1", long_name=f"number of 6-h windows ({v})")
+        out[v].attrs.update(units="1", long_name=f"number of {d}-h windows ({v})")
 
     out["frac_above_p_wet"].attrs.update(
         units="1", long_name="Fraction of wet-window precipitation from windows exceeding the percentile")
     out["wet_freq"].attrs.update(units="1", long_name="wet-window frequency")
     out["freq_above_abs"].attrs.update(units="1", long_name="fraction of valid windows above threshold")
-    out["threshold"].attrs.update(units="mm (6 h)-1")
+    out["threshold"].attrs.update(units=f"mm ({d} h)-1")
 
     out.attrs.update(
         framework="ITCHI-CORE",
-        source="MSWEP V3 hourly -> 6-h accumulations (scripts/mswep_v3_6h_accum.py)",
+        source="MSWEP V3 hourly -> 6-h accumulations (scripts/mswep_v3_6h_accum.py)"
+               + ("" if d == 6 else f" -> {d}-h running sums of 6-h accumulations"),
         period=f"{cfg.start_year}-{cfg.end_year}",
         months="5,6,7,8,9,10,11",
-        accumulation_window="(T-6h, T], T in 00/06/12/18 UTC",
+        duration_h=d,
+        accumulation_window=f"(T-{d}h, T], T in 00/06/12/18 UTC",
+        antecedent_note=("" if d == 6 else
+                         f"exclusive antecedent A{d}(T) = R{d}(T-6h) uses these same percentiles"),
         wet_window_threshold_mm=cfg.wet,
         quantiles=",".join(map(str, cfg.qs)),
         quantile_method=cfg.qmethod,
         min_expected_exceedances=cfg.k_exc,
-        description="6-h MSWEP V3 precipitation percentiles for May-November.",
+        overlap_factor=cfg.n_overlap,
+        sufficiency_rule="n_wet >= k_exc * overlap_factor / (1 - q)",
+        description=f"{d}-h MSWEP V3 precipitation percentiles for May-November.",
     )
 
     return out
@@ -203,11 +284,11 @@ def run(cfg: Config = Config()) -> xr.Dataset:
     t0 = time.time()
 
     print("\n" + "=" * 75)
-    print("ITCHI-CORE · MSWEP V3 6-h precipitation percentiles")
+    print(f"ITCHI-CORE · MSWEP V3 {cfg.duration_h}-h precipitation percentiles")
     print("=" * 75)
 
-    print("\n[1/3] Lectura de acumulados de 6 h")
-    pr = open_precip_6h(cfg)
+    print(f"\n[1/3] Lectura de acumulados de 6 h -> {cfg.duration_h} h")
+    pr = rolling_accum(open_precip_6h(cfg), cfg.duration_h)
 
     print("\n[2/3] Construcción del grafo de cálculo")
     out = xr.merge([percentile_fields(pr, cfg), frequency_fields(pr, cfg)])
@@ -238,5 +319,13 @@ def run(cfg: Config = Config()) -> xr.Dataset:
 
 if __name__ == "__main__":
 
-    # Climatología completa 2000–2025. by_hour=True duplica aprox. el tiempo de cálculo.
-    out = run(Config(start_year=2000, end_year=2025, by_hour=True))
+    ap = argparse.ArgumentParser(description="Percentiles MSWEP V3 de 6 h y acumulados móviles")
+    ap.add_argument("--durations", type=int, nargs="+", default=[24, 72],
+                    help="duraciones en h, múltiplos de 6 (6 ya existe con by_hour=True)")
+    ap.add_argument("--by-hour", action="store_true",
+                    help="estratificar por hora final (duplica el tiempo; solo útil en 6 h)")
+    args = ap.parse_args()
+
+    # Climatología completa 2000–2025, una corrida por duración
+    for d in args.durations:
+        run(Config(start_year=2000, end_year=2025, duration_h=d, by_hour=args.by_hour))
