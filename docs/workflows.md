@@ -295,6 +295,14 @@ The `outputs/` directory should remain ignored by Git.
 
 ---
 
+## ITCHI v0.2 verification workflow
+
+Real-data workflow used to calibrate and evaluate v0.2 (MSWEP V3.16, IBTrACS,
+CENAPRED declarations). Order of scripts and notebooks, inputs and outputs:
+[`verification_v02.md`](verification_v02.md#reproduction).
+
+---
+
 ## Current boundary of the repository
 
 The current workflows are synthetic and structural. They validate the core mechanics of ITCHI but do not yet claim a fully real-data operational product.

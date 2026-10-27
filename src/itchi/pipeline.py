@@ -15,6 +15,15 @@ Two levels of calculation are provided:
 
 The second function is closer to the expected operational use with real
 tropical cyclone data.
+
+ITCHI v0.2 options (defaults reproduce v0.1):
+
+- ``precipitation_hazard``: precomputed H_P, e.g. the P6 x (R24, A72) matrix of
+  precipitation.compute_precipitation_matrix_hazard; q90/q95/q99 are then
+  not used.
+- ``wind_model="w06_tail"``: W06 wind profile calibrated to the observed
+  mean R34, normalized by quadrant, with a tail that decays to zero at the
+  attribution radius; the tail enters the indirect component.
 """
 
 from __future__ import annotations
@@ -26,12 +35,14 @@ import numpy as np
 import xarray as xr
 
 from itchi.components import compute_hazard_components
+from itchi.constants import ITCHI_VERSION
 from itchi.geometry import (
     assign_quadrant_radius,
     build_geometry_fields,
 )
 from itchi.index import compute_itchi_from_components
 from itchi.masks import build_region_masks
+from itchi.parametric_radii import compute_w06_wind_hazard_with_tail
 from itchi.precipitation import compute_precipitation_hazard
 from itchi.quality_control import run_snapshot_quality_control
 from itchi.radii import resolve_attribution_radius, resolve_direct_radius
@@ -43,9 +54,9 @@ ArrayLike = np.ndarray | xr.DataArray
 
 def compute_itchi_snapshot(
     precipitation: ArrayLike,
-    q90: float | ArrayLike,
-    q95: float | ArrayLike,
-    q99: float | ArrayLike,
+    q90: float | ArrayLike | None,
+    q95: float | ArrayLike | None,
+    q99: float | ArrayLike | None,
     radius_km: ArrayLike,
     r34_km: float | ArrayLike,
     rocloud_km: float | ArrayLike,
@@ -55,6 +66,8 @@ def compute_itchi_snapshot(
     lambda_direct: float = 1.0,
     mu_indirect: float = 1.0,
     run_quality_control: bool = False,
+    precipitation_hazard: ArrayLike | None = None,
+    wind_hazard_indirect: ArrayLike | None = None,
 ) -> dict[str, Any]:
     """
     Compute ITCHI for a single cyclone-centered precipitation snapshot.
@@ -92,18 +105,26 @@ def compute_itchi_snapshot(
         Weight/exponent for the indirect component in final ITCHI.
     run_quality_control : bool, default=False
         Whether to run standard snapshot quality-control checks.
+    precipitation_hazard : numpy.ndarray, xarray.DataArray or None
+        ITCHI v0.2: precomputed H_P (e.g. P6 x (R24, A72) matrix). If given,
+        q90/q95/q99 are ignored.
+    wind_hazard_indirect : numpy.ndarray, xarray.DataArray or None
+        ITCHI v0.2: wind hazard with outer tail for the indirect region.
 
     Returns
     -------
     dict[str, Any]
         Dictionary containing masks, intermediate components and final ITCHI.
     """
-    precipitation_hazard = compute_precipitation_hazard(
-        precipitation=precipitation,
-        q90=q90,
-        q95=q95,
-        q99=q99,
-    )
+    if precipitation_hazard is None:
+        if q90 is None or q95 is None or q99 is None:
+            raise ValueError("q90, q95 and q99 are required when precipitation_hazard is None.")
+        precipitation_hazard = compute_precipitation_hazard(
+            precipitation=precipitation,
+            q90=q90,
+            q95=q95,
+            q99=q99,
+        )
 
     masks = build_region_masks(
         radius_km=radius_km,
@@ -118,6 +139,7 @@ def compute_itchi_snapshot(
         indirect_mask=masks["indirect"],
         alpha=alpha_wind,
         beta=beta_precip_direct,
+        wind_hazard_indirect=wind_hazard_indirect,
     )
 
     itchi = compute_itchi_from_components(
@@ -139,6 +161,10 @@ def compute_itchi_snapshot(
         "ITCHI": itchi,
     }
 
+    for key in ("H_Wdir", "H_Wind"):
+        if key in components:
+            result[key] = components[key]
+
     if run_quality_control:
         run_snapshot_quality_control(result)
 
@@ -147,9 +173,9 @@ def compute_itchi_snapshot(
 
 def compute_itchi_snapshot_from_grid(
     precipitation: ArrayLike,
-    q90: float | ArrayLike,
-    q95: float | ArrayLike,
-    q99: float | ArrayLike,
+    q90: float | ArrayLike | None,
+    q95: float | ArrayLike | None,
+    q99: float | ArrayLike | None,
     lon: ArrayLike,
     lat: ArrayLike,
     center_lon: float,
@@ -172,6 +198,11 @@ def compute_itchi_snapshot_from_grid(
     lambda_direct: float = 1.0,
     mu_indirect: float = 1.0,
     run_quality_control: bool = False,
+    precipitation_hazard: ArrayLike | None = None,
+    wind_model: str = "v01",
+    wind_tail_h34: float = 0.2,
+    r34_mean_km: float | None = None,
+    w06_profile_kwargs: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Compute ITCHI directly from a lon/lat grid and cyclone-center metadata.
@@ -247,6 +278,20 @@ def compute_itchi_snapshot_from_grid(
         Weight/exponent for the indirect component in final ITCHI.
     run_quality_control : bool, default=False
         Whether to run standard snapshot quality-control checks.
+    precipitation_hazard : numpy.ndarray, xarray.DataArray or None
+        ITCHI v0.2: precomputed H_P (e.g. P6 x (R24, A72) matrix); q90/q95/q99 are
+        then ignored and may be None.
+    wind_model : {"v01", "w06_tail"}, default="v01"
+        "v01": wind hazard only inside R_direct (provided or modified Rankine).
+        "w06_tail": ITCHI v0.2 W06 wind with outer tail down to the
+        attribution radius; requires vmax_kt and center_lat.
+    wind_tail_h34 : float, default=0.2
+        Hazard at the 34-kt radius for wind_model="w06_tail".
+    r34_mean_km : float or None, default=None
+        Observed mean R34 (km) used to calibrate W06; None takes the mean of
+        the valid observed R34 quadrants (no calibration if there are none).
+    w06_profile_kwargs : Mapping or None, default=None
+        Extra arguments for Willoughby2006Profile (e.g. rmax_variant).
 
     Returns
     -------
@@ -254,6 +299,8 @@ def compute_itchi_snapshot_from_grid(
         Dictionary containing geometry fields, masks, intermediate components,
         radius-resolution metadata, wind metadata and final ITCHI.
     """
+    if wind_model not in {"v01", "w06_tail"}:
+        raise ValueError(f"Unsupported wind_model: {wind_model!r}")
     r34_km_by_quadrant = convert_quadrant_radii_to_km(
         radii_by_quadrant=r34_by_quadrant,
         input_unit=r34_unit,
@@ -297,7 +344,44 @@ def compute_itchi_snapshot_from_grid(
         radii_by_quadrant=resolved_rocloud_radius.radii,
     )
 
-    if wind_hazard_normalized is None:
+    wind_hazard_indirect = None
+    wind_extra: dict[str, Any] = {}
+
+    if wind_model == "w06_tail":
+        if wind_hazard_normalized is not None:
+            raise ValueError("wind_hazard_normalized cannot be combined with wind_model='w06_tail'.")
+        if vmax_kt is None:
+            raise ValueError("wind_model='w06_tail' requires vmax_kt.")
+
+        if r34_mean_km is None:
+            observed = [
+                float(v) for v in r34_km_by_quadrant.values()
+                if v is not None and np.isfinite(float(v)) and float(v) > 0.0
+            ]
+            r34_mean_km = float(np.mean(observed)) if observed else None
+
+        w06 = compute_w06_wind_hazard_with_tail(
+            radius_km=radius_km,
+            direct_radius_km=direct_radius_q,
+            attribution_radius_km=rocloud_q,
+            vmax_kt=float(vmax_kt),
+            lat=float(center_lat),
+            rmw_km=rmw_km,
+            r34_mean_km=r34_mean_km,
+            h34=wind_tail_h34,
+            **dict(w06_profile_kwargs or {}),
+        )
+        wind_hazard_for_pipeline = w06["H_W"]
+        wind_hazard_indirect = w06["H_W"]
+        wind_hazard_source = "w06_tail"
+        wind_extra = {
+            "wind_kt": w06["wind_kt"],
+            "w06_x1_km": w06["x1_km"],
+            "w06_x1_calibrated": w06["x1_calibrated"],
+            "wind_tail_h34": wind_tail_h34,
+        }
+
+    elif wind_hazard_normalized is None:
         if vmax_kt is None or rmw_km is None:
             raise ValueError(
                 "wind_hazard_normalized was not provided. "
@@ -335,6 +419,8 @@ def compute_itchi_snapshot_from_grid(
         lambda_direct=lambda_direct,
         mu_indirect=mu_indirect,
         run_quality_control=False,
+        precipitation_hazard=precipitation_hazard,
+        wind_hazard_indirect=wind_hazard_indirect,
     )
 
     full_result = {
@@ -350,6 +436,16 @@ def compute_itchi_snapshot_from_grid(
         "wind_hazard_source": wind_hazard_source,
         **result,
     }
+
+    # v0.2 metadata only when a v0.2 option is used (v0.1 output keys unchanged)
+    if precipitation_hazard is not None or wind_model != "v01":
+        full_result.update(
+            itchi_version=ITCHI_VERSION,
+            precipitation_hazard_source=(
+                "provided" if precipitation_hazard is not None else "q90_q95_q99"
+            ),
+            **wind_extra,
+        )
 
     if run_quality_control:
         run_snapshot_quality_control(full_result)

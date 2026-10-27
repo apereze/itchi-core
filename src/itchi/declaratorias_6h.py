@@ -31,6 +31,28 @@ Agregación:
 Los percentiles se leen de data/processed/mswep_v3_6h_percentiles_may_nov.nc
 (los que contenga el archivo; actualmente P75, P90, P95, P99, P99.9).
 
+Multiduración (requiere percentiles_6h.py --durations 24 72):
+
+    R24(T), R72(T)  acumulados inclusivos en (T-24h, T] y (T-72h, T]
+    A72(T)          antecedente exclusivo en (T-78h, T-6h] = R72(T-6h)
+                    (misma climatología que R72)
+
+    Se calculan sobre la temporada completa del año, de modo que el
+    antecedente incluye lluvia previa a Fecha Inicio y lluvia no asociada
+    al CT. Para cada serie se guarda:
+
+    *_en_pico6        valor y clase en el píxel y paso del pico de 6 h
+    *_evento          máximo propio sobre píxeles y pasos de la declaratoria,
+                      con su clase en su propio píxel; nivel_*_area_evento
+                      es la clase máxima sobre el área
+
+    Niveles combinados (en el pico de 6 h):
+
+    nivel_multidur_pico  opción A: máximo de las clases de P6, R24 y R72
+    nivel_base_pico      rampa solo 6 h: <P75, P75, P90, P95, P99 -> 0..4
+    nivel_matriz_pico    opción B: rampa base escalada; P95-P99 -> máximo si R24 >= P95 y A72 >= P75
+                         (calibrada con negativos_w06.py; ver Config.escalada_*)
+
 Salidas (outputs/diagnostics/declaratorias_6h/):
 
     declaratorias_ct_pasos.csv
@@ -41,6 +63,8 @@ Salidas (outputs/diagnostics/declaratorias_6h/):
     declaratorias_ct_pixel_stats.nc       por píxel y tipo: n, mín, mediana, media, máx + Identificador
     declaratorias_ct_municipios_stats.csv por municipio y tipo: mín, mediana, media, máx + declaratoria/CT
     declaratorias_ct_por_ciclon.csv       por CT: declaratorias asociadas y su lluvia
+    declaratorias_ct_multiduracion_resumen.csv   escalamiento y saturación por tipo
+    declaratorias_ct_matriz_P6_A72.csv           tabla cruzada clase P6 x clase A72 por tipo
     qc_claves_sin_geometria.csv
 
 Ejecutar desde scripts/:
@@ -61,7 +85,10 @@ import pandas as pd
 import xarray as xr
 from tqdm.auto import tqdm
 
-REPO = Path("/mnt/c/Users/adolf/Documents/ITCHI/itchi-core")
+# Raíz del repo: primer directorio superior con pyproject.toml (instalación editable);
+# si no se encuentra (instalación normal), el directorio de trabajo.
+REPO = next((p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").exists()),
+            Path.cwd())
 # ============================================================================
 # CONFIGURACIÓN
 # ============================================================================
@@ -85,6 +112,33 @@ class Config:
     # p_wet_raw: sin filtro de suficiencia. p_wet deja P99.9 casi todo en NaN
     # (requiere >= 10 000 ventanas húmedas por píxel).
     pct_var: str = "p_wet_raw"
+
+    # ------------------------------------------------------------------------
+    # Multiduración (percentiles_6h.py --durations 24 72)
+    # ------------------------------------------------------------------------
+
+    # Acumulados inclusivos R_d y antecedentes exclusivos A_d (h, múltiplos de 6)
+    durations_h: tuple = (24, 72)
+    antecedent_h: tuple = (72,)
+
+    percentiles_dur_pattern: str = str(REPO / "data/processed/mswep_v3_{d}h_percentiles_may_nov.nc")
+
+    # p_wet_raw por consistencia con 6 h. En 72 h P99.9 no es robusto (traslape de
+    # ventanas); "p_wet" aplica el filtro de suficiencia efectivo y lo deja en NaN,
+    # con lo que la clase máxima alcanzable en 72 h es P99.
+    pct_var_dur: str = "p_wet_raw"
+
+    # Niveles 0 sin, 1 bajo, 2 medio, 3 alto, 4 máximo. Rampa base por clase de P6
+    # (<P75, P75-P90, P90-P95, P95-P99, P99-P99.9, >=P99.9) y escalada (opción B)
+    # calibrada con pares municipio-CT (negativos_w06.py): las clases de P6 en
+    # escalada_clases_P6 suben a escalada_nivel si se cumplen las condiciones
+    # (variable, percentil mínimo); "y" exige todas, "o" basta una. Una condición
+    # sin dato (p. ej. inicio de temporada) no escala.
+    rampa_base: tuple = (0, 1, 2, 3, 4, 4)
+    escalada_clases_P6: tuple = (3,)
+    escalada_nivel: int = 4
+    escalada_condiciones: tuple = (("R24", "P95"), ("A72", "P75"))
+    escalada_modo: str = "y"
 
     start_year: int = 2000
     end_year: int = 2025
@@ -332,12 +386,63 @@ def municipio_pixels(gdf, lat: np.ndarray, lon: np.ndarray, codes) -> dict:
 # ============================================================================
 
 
-def open_percentiles(cfg: Config) -> xr.DataArray:
+def open_percentiles(cfg: Config, path: str | None = None, var: str | None = None) -> xr.DataArray:
 
-    with xr.open_dataset(cfg.percentiles_file) as ds:
-        q = ds[cfg.pct_var].sel(lat=slice(*cfg.lat_bounds), lon=slice(*cfg.lon_bounds)).load()
+    with xr.open_dataset(path or cfg.percentiles_file) as ds:
+        q = ds[var or cfg.pct_var].sel(lat=slice(*cfg.lat_bounds), lon=slice(*cfg.lon_bounds)).load()
 
     return q.transpose("quantile", "lat", "lon")
+
+
+def series_spec(cfg: Config) -> dict:
+    """{nombre: (duración h, antecedente)}: R24, R72 inclusivos; A72 exclusivo."""
+
+    spec = {f"R{d}": (d, False) for d in cfg.durations_h}
+    spec.update({f"A{d}": (d, True) for d in cfg.antecedent_h})
+    return spec
+
+
+def window_sum(F: np.ndarray, n: int) -> np.ndarray:
+    """
+    F (nt, npix), pasos de 6 h contiguos -> R (nt, npix): suma de los n pasos que
+    terminan en t. NaN si falta algún paso o si t < n-1 (inicio de temporada).
+    """
+
+    if n == 1:
+        return F
+    out = np.full_like(F, np.nan)
+    nt = F.shape[0]
+    if nt >= n:
+        out[n - 1:] = F[n - 1:]
+        for k in range(1, n):
+            out[n - 1:] += F[n - 1 - k:nt - k]   # NaN se propaga a la ventana
+    return out
+
+
+def dur_step_stats(arr: np.ndarray, qpix: np.ndarray, imax6: np.ndarray, name: str) -> pd.DataFrame:
+    """
+    arr   (nt, npix): serie de duración (R24, R72, A72) en los píxeles del municipio.
+    qpix  (nq, npix): percentiles de esa duración.
+    imax6 (nt,):      índice local del píxel del máximo de 6 h en cada paso.
+    """
+
+    fin = np.isfinite(arr)
+    valid = fin.any(axis=1)
+    a = np.where(fin, arr, -np.inf)
+    rows = np.arange(len(a))
+    im = a.argmax(axis=1)
+
+    with np.errstate(invalid="ignore"):
+        nivel_pix = (arr[:, None, :] >= qpix[None, :, :]).sum(axis=1)   # (nt, npix); NaN -> 0
+
+    at6 = arr[rows, imax6]
+    return pd.DataFrame({
+        f"{name}_max": np.where(valid, a[rows, im], np.nan),
+        f"nivel_{name}_pixel_max": np.where(valid, nivel_pix[rows, im], -1),
+        f"nivel_{name}_area": np.where(valid, nivel_pix.max(axis=1), -1),
+        f"{name}_en_pico6": at6,
+        f"nivel_{name}_en_pico6": np.where(np.isfinite(at6), nivel_pix[rows, imax6], -1),
+    })
 
 
 def open_6h_year(cfg: Config, year: int) -> xr.DataArray | None:
@@ -444,6 +549,17 @@ def run(cfg: Config = Config()) -> dict:
     print(f"Percentiles ({cfg.pct_var}): {', '.join(labels)} | municipios: {len(pix):,} "
           f"| sin centro de píxel dentro: {sum(n == 0 for _, n in pix.values())}")
 
+    # Percentiles por duración (misma malla que los de 6 h)
+    spec = series_spec(cfg)
+    Qdur, labels_dur = {}, {}
+    for d in sorted({d for d, _ in spec.values()}):
+        Qd = open_percentiles(cfg, cfg.percentiles_dur_pattern.format(d=d), cfg.pct_var_dur)
+        if not (np.allclose(Qd["lat"].values, lat) and np.allclose(Qd["lon"].values, lon)):
+            raise ValueError(f"La malla de los percentiles de {d} h no coincide con la de 6 h.")
+        Qdur[d] = Qd.values.reshape(Qd.sizes["quantile"], -1)
+        labels_dur[d] = pct_labels(Qd["quantile"].values)
+        print(f"Percentiles {d} h ({cfg.pct_var_dur}): {', '.join(labels_dur[d])}")
+
     # ------------------------------------------------------------------ 4
     print("\n[4/5] Precipitación de 6 h por paso")
 
@@ -468,12 +584,34 @@ def run(cfg: Config = Config()) -> dict:
             da.close()
             continue
 
-        F = (da.sel(time=need, lat=slice(*cfg.lat_bounds), lon=slice(*cfg.lon_bounds))
-               .transpose("time", "lat", "lon").load().values.reshape(len(need), -1))
+        # Temporada completa: los acumulados de 24/72 h necesitan los pasos previos.
+        # El archivo está fragmentado (tiempo completo, 25 x 25), así que leer toda la
+        # temporada del recorte cuesta lo mismo que leer solo los pasos con CT.
+        if not (np.diff(tfile.values) == np.timedelta64(6, "h")).all():
+            raise ValueError(f"{year}: los pasos de 6 h no son contiguos; no se pueden formar acumulados.")
+        Fy = (da.sel(lat=slice(*cfg.lat_bounds), lon=slice(*cfg.lon_bounds))
+                .transpose("time", "lat", "lon").load().values.reshape(len(tfile), -1))
         da.close()
 
-        if F.shape[1] != ny * nx:
+        if Fy.shape[1] != ny * nx:
             raise ValueError("La malla de los acumulados de 6 h no coincide con la de los percentiles.")
+
+        # Series en los pasos requeridos: P6 y, por duración, R_d(T) o A_d(T) = R_d(T - 6 h)
+        ineed = tfile.get_indexer(need)
+        G = {"P6": Fy[ineed]}
+        for d in sorted({d for d, _ in spec.values()}):
+            Rd = window_sum(Fy, d // 6)
+            for name, (dd, ant) in spec.items():
+                if dd != d:
+                    continue
+                if ant:
+                    prev = ineed - 1
+                    G[name] = np.where((prev >= 0)[:, None], Rd[np.maximum(prev, 0)], np.nan).astype("float32")
+                else:
+                    G[name] = Rd[ineed]
+            del Rd
+        del Fy
+        F = G["P6"]
 
         tpos = pd.Series(np.arange(len(need)), index=need)
 
@@ -482,12 +620,16 @@ def run(cfg: Config = Config()) -> dict:
             flat, _ = pix[code]
             ut = pd.DatetimeIndex(pm["time"].unique())
             arr = F[tpos[ut].values][:, flat]
+            arrs = {name: G[name][tpos[ut].values][:, flat] for name in spec}
 
             st = step_stats(arr, Qflat[:, flat], labels)
+            imax6 = st["ipix_max"].values
+            for name, (d, _) in spec.items():
+                st = st.join(dur_step_stats(arrs[name], Qdur[d][:, flat], imax6, name))
             st["time"] = ut
             st["CVEGEO"] = code
-            st["lat_pmax"] = lat[flat[st["ipix_max"].values] // nx]
-            st["lon_pmax"] = lon[flat[st["ipix_max"].values] % nx]
+            st["lat_pmax"] = lat[flat[imax6] // nx]
+            st["lon_pmax"] = lon[flat[imax6] % nx]
             results.append(st.drop(columns="ipix_max"))
 
             # Producto por píxel: máximo de 6 h por declaratoria, luego mínimo entre declaratorias
@@ -503,8 +645,16 @@ def run(cfg: Config = Config()) -> dict:
                 ok = np.isfinite(ev_max)
                 pix_min[flat[ok]] = np.minimum(pix_min[flat[ok]], ev_max[ok])
                 pix_n[flat[ok]] += 1
-                rec.append(pd.DataFrame({"id_decl": idd, "ipix": flat[ok], "P6_pix": ev_max[ok],
-                                         "t_max_pix": tt[kmax[ok]]}))
+                r = {"id_decl": idd, "ipix": flat[ok], "P6_pix": ev_max[ok], "t_max_pix": tt[kmax[ok]]}
+                irow = [row_of[t] for t in tt]
+                for name, (_, ant) in spec.items():
+                    e = arrs[name][irow]
+                    if ant:   # antecedente en el paso del máximo de 6 h del píxel
+                        r[f"{name}_pix_en_tmax"] = e[kmax, np.arange(e.shape[1])][ok]
+                    else:     # máximo propio del acumulado durante la declaratoria
+                        with np.errstate(invalid="ignore"):
+                            r[f"{name}_pix_max"] = np.fmax.reduce(e, axis=0)[ok]
+                rec.append(pd.DataFrame(r))
 
     stats = pd.concat(results, ignore_index=True) if results else pd.DataFrame(columns=["CVEGEO", "time"])
     pasos = pasos.drop(columns="year").merge(stats, on=["CVEGEO", "time"], how="left")
@@ -529,7 +679,8 @@ def run(cfg: Config = Config()) -> dict:
     pk_cols = ["time", "CT", "dist_km", "dentro_rocloud", "dentro_Rp", "P_max", "P_media",
                "nivel_pixel_max", "nivel_max_area", "lat_pmax", "lon_pmax"] + \
               [f"{l}_pixel_max" for l in labels] + [f"dif_{l}" for l in labels] + \
-              [f"frac_area_ge_{l}" for l in labels]
+              [f"frac_area_ge_{l}" for l in labels] + \
+              [c for s in spec for c in (f"{s}_en_pico6", f"nivel_{s}_en_pico6")]
     peak = peak[pk_cols].rename(columns={"time": "t_pico", "CT": "CT_pico", "dist_km": "dist_pico_km",
                                          "dentro_rocloud": "dentro_rocloud_pico", "dentro_Rp": "dentro_Rp_pico",
                                          "P_max": "P_evento", "P_media": "P_media_pico",
@@ -538,6 +689,10 @@ def run(cfg: Config = Config()) -> dict:
     eventos = info.join(n_all, how="inner").join(agg).join(peak)
     eventos["P_evento_sobre_P95"] = eventos["P_evento"] / eventos.get("P95_pixel_max", np.nan)
     eventos["clase_pico"] = level_label(eventos["nivel_pico"], labels)
+    eventos = eventos.join(event_duration_stats(v, spec))
+    for s, (d, _) in spec.items():
+        eventos[f"clase_{s}_en_pico6"] = level_label(eventos[f"nivel_{s}_en_pico6"], labels_dur[d])
+    eventos = combined_levels(eventos, spec, labels, labels_dur, cfg)
     eventos = eventos.reset_index()
 
     # Lluvia por píxel y declaratoria (sin umbrales)
@@ -575,6 +730,11 @@ def run(cfg: Config = Config()) -> dict:
                      float_format="%.3f")
     ciclones.to_csv(os.path.join(cfg.out_dir, "declaratorias_ct_por_ciclon.csv"), index=False, float_format="%.3f")
 
+    res_md, cruz = resumen_multiduracion(eventos, labels)
+    res_md.to_csv(os.path.join(cfg.out_dir, "declaratorias_ct_multiduracion_resumen.csv"), float_format="%.2f")
+    if cruz is not None:
+        cruz.to_csv(os.path.join(cfg.out_dir, "declaratorias_ct_matriz_P6_A72.csv"), float_format="%.4f")
+
     ok = eventos["P_evento"].notna()
     print(f"\nDeclaratorias con datos: {ok.sum():,} | municipios: {municipios['n_decl'].gt(0).sum():,}")
     print(f"P_evento (mm/6 h): mín {eventos.loc[ok, 'P_evento'].min():.1f} | "
@@ -587,6 +747,8 @@ def run(cfg: Config = Config()) -> dict:
         "P10": [e[f"dif_{l}"].quantile(0.1) for l in labels],
         "% bajo el percentil": [100 * (e[f"dif_{l}"] < 0).mean() for l in labels],
     }, index=labels).astype(float).round(1).to_string())
+    print("\nMultiduración (%, ver declaratorias_ct_multiduracion_resumen.csv):")
+    print(res_md.round(1).to_string())
 
     print("\n" + "=" * 75)
     print(f"PROCESO TERMINADO · {(time.time() - t0) / 60:.1f} minutos · {cfg.out_dir}")
@@ -623,8 +785,140 @@ def build_pixel_decl(rec, eventos, pasos, lat, lon, nx) -> pd.DataFrame:
                                                                      "dist_km": "dist_t_max_km"})
     d = d.merge(ct, on=["id_decl", "t_max_pix"], how="left")
 
+    dur = [c for c in d.columns if c.endswith(("_pix_max", "_pix_en_tmax"))]
     return d[["id_decl", "Identificador", "Tipo Declaratoria", "CVEGEO", "Municipio", "Estado", "ipix",
-              "lat", "lon", "P6_pix", "t_max_pix", "CT_t_max", "dist_t_max_km"]]
+              "lat", "lon", "P6_pix", "t_max_pix", "CT_t_max", "dist_t_max_km"] + dur]
+
+
+# ============================================================================
+# MULTIDURACIÓN
+# ============================================================================
+
+
+GRUPOS_A = ["<P75", "P75-P95", ">=P95"]
+
+
+def event_duration_stats(v: pd.DataFrame, spec: dict) -> pd.DataFrame:
+    """
+    Por declaratoria y serie (R24, R72, A72): máximo propio sobre píxeles y pasos con CT,
+    su clase en su propio píxel y la clase máxima sobre el área del municipio.
+    """
+
+    parts = []
+    for s in spec:
+        col = f"{s}_max"
+        w = v[v[col].notna()]
+        at = w.loc[w.groupby("id_decl")[col].idxmax()].set_index("id_decl")
+        parts.append(pd.DataFrame({
+            f"{s}_evento": at[col],
+            f"nivel_{s}_evento": at[f"nivel_{s}_pixel_max"],
+            f"nivel_{s}_area_evento": v.groupby("id_decl")[f"nivel_{s}_area"].max(),
+        }))
+
+    return pd.concat(parts, axis=1)
+
+
+def combined_levels(ev: pd.DataFrame, spec: dict, labels: list[str], labels_dur: dict,
+                    cfg: Config) -> pd.DataFrame:
+    """
+    En el pico de 6 h:
+      opción A  nivel_multidur_pico = máx(clase P6, clase R24, clase R72) y la duración que lo fija
+      rampa     nivel_base_pico     = Config.rampa_base[clase P6]
+      opción B  nivel_matriz_pico   = rampa base con la escalada de Config.escalada_*
+    Las clases solo son comparables entre duraciones si usan los mismos percentiles.
+    """
+
+    ev = ev.copy()
+    r_names = [s for s, (_, ant) in spec.items() if not ant]
+    if any(labels_dur[spec[s][0]] != labels for s in r_names):
+        print("  Aviso: los percentiles de 6 h y de 24/72 h difieren; nivel_multidur_pico compara clases distintas.")
+
+    # Opción A: máximo de clases; en empate gana la duración más corta (orden P6, R24, R72)
+    cols = ["nivel_pico"] + [f"nivel_{s}_en_pico6" for s in r_names]
+    cl = ev[cols].astype(float).where(lambda x: x >= 0)
+    ev["nivel_multidur_pico"] = cl.max(axis=1)
+    dom = cl.fillna(-1).to_numpy().argmax(axis=1)
+    ev["duracion_dominante_pico"] = np.where(cl.notna().any(axis=1), np.array(["P6"] + r_names)[dom], None)
+
+    # Rampa solo 6 h
+    base = np.asarray(cfg.rampa_base)
+    if labels[0] != "P75" or base.size != len(labels) + 1:
+        print(f"  Aviso: rampa_base {base.tolist()} no es compatible con los percentiles {labels}; "
+              "no se calculan nivel_base_pico ni nivel_matriz_pico.")
+        return ev
+    c6 = ev["nivel_pico"].astype(float)
+    ok6 = (c6 >= 0).to_numpy()
+    row = np.where(ok6, c6, 0).astype(int)
+    lv_base = base[row]
+    ev["nivel_base_pico"] = np.where(ok6, lv_base, np.nan)
+
+    # Grupo de A72 (para la tabla cruzada)
+    a_names = [s for s, (_, ant) in spec.items() if ant]
+    if a_names:
+        a = a_names[0]
+        la = labels_dur[spec[a][0]]
+        ca = ev[f"nivel_{a}_en_pico6"].astype(float)
+        col = ((ca >= la.index("P75") + 1).astype(int) + (ca >= la.index("P95") + 1).astype(int)).to_numpy()
+        ev[f"grupo_{a}_pico"] = np.where((ca >= 0).to_numpy(), np.array(GRUPOS_A, dtype=object)[col], None)
+
+    # Opción B: escalada por condiciones
+    conds = []
+    for var, pct in cfg.escalada_condiciones:
+        if var not in spec or f"nivel_{var}_en_pico6" not in ev:
+            print(f"  Aviso: falta {var} para la escalada; no se calcula nivel_matriz_pico.")
+            return ev
+        k = labels_dur[spec[var][0]].index(pct) + 1
+        conds.append((ev[f"nivel_{var}_en_pico6"].astype(float) >= k).to_numpy())
+    cond = np.logical_and.reduce(conds) if cfg.escalada_modo == "y" else np.logical_or.reduce(conds)
+    esc = ok6 & np.isin(row, cfg.escalada_clases_P6) & cond
+    ev["nivel_matriz_pico"] = np.where(ok6, np.where(esc, np.maximum(lv_base, cfg.escalada_nivel), lv_base), np.nan)
+
+    return ev
+
+
+def resumen_multiduracion(ev: pd.DataFrame, labels: list[str]):
+    """
+    Diagnósticos con positivos (sin negativos no hay falsas alarmas):
+      - fracción < P75 en 6 h y cuántas suben con R24/R72 (opción A)
+      - fracción escalada por A72 (opción B) y saturación del nivel máximo
+    Por tipo, con todas las declaratorias y solo con P_evento >= 1 mm
+    (las emergencias preventivas sin lluvia no pertenecen a la calibración del peligro).
+    """
+
+    has_b = "nivel_matriz_pico" in ev
+    a_col = next((c for c in ev.columns if c.startswith("grupo_A") and c.endswith("_pico")), None)
+    rows, cruz = {}, []
+
+    for t in ["todas"] + list(TIPOS):
+        et = ev if t == "todas" else ev[ev["Tipo Declaratoria"].eq(t)]
+        et = et[et["nivel_pico"] >= 0]
+        for filtro, e in (("todas", et), ("P_evento >= 1 mm", et[et["P_evento"] >= 1.0])):
+            if e.empty:
+                continue
+            c6, ma = e["nivel_pico"], e["nivel_multidur_pico"]
+            r = {"n": len(e),
+                 "% < P75 (6 h)": 100 * (c6 == 0).mean(),
+                 "% de < P75 que sube con R24/R72": 100 * (ma[c6 == 0] > 0).mean() if (c6 == 0).any() else np.nan,
+                 "% escalada A (R24/R72)": 100 * (ma > c6).mean(),
+                 "% fijada por R24": 100 * e["duracion_dominante_pico"].eq("R24").mean(),
+                 "% fijada por R72": 100 * e["duracion_dominante_pico"].eq("R72").mean()}
+            if has_b:
+                b = e.dropna(subset=["nivel_matriz_pico"])
+                r.update({"% escalada B (A72)": 100 * (b["nivel_matriz_pico"] > b["nivel_base_pico"]).mean(),
+                          "% máximo rampa 6 h": 100 * (b["nivel_base_pico"] == 4).mean(),
+                          "% máximo matriz B": 100 * (b["nivel_matriz_pico"] == 4).mean()})
+                r.update({f"% matriz nivel {k}": 100 * (b["nivel_matriz_pico"] == k).mean() for k in range(5)})
+            rows[(t, filtro)] = r
+
+        if has_b and a_col and not et.empty:
+            ct = pd.crosstab(level_label(et["nivel_pico"], labels), et[a_col], normalize="all") \
+                   .reindex(index=level_names(labels), columns=GRUPOS_A, fill_value=0.0)
+            ct.index.name, ct.columns.name = "clase_P6", a_col
+            cruz.append(ct.assign(tipo=t).set_index("tipo", append=True).swaplevel())
+
+    res = pd.DataFrame.from_dict(rows, orient="index")
+    res.index.names = ["tipo", "filtro"]
+    return res, (pd.concat(cruz) if cruz else None)
 
 
 def pixel_stats(pix_decl: pd.DataFrame, Q: xr.DataArray, cfg) -> xr.Dataset:

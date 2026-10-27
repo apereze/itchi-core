@@ -65,6 +65,12 @@ DEFAULT_METADATA_FIELDS: tuple[str, ...] = (
     "ROCLOUD_source",
     "ROCLOUD_filled_quadrants",
     "wind_hazard_source",
+    # ITCHI v0.2 (present only when v0.2 options are used)
+    "itchi_version",
+    "precipitation_hazard_source",
+    "w06_x1_km",
+    "w06_x1_calibrated",
+    "wind_tail_h34",
 )
 
 

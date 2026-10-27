@@ -17,6 +17,10 @@ normalize_wind_hazard:
 
 compute_wind_hazard_from_profile:
     Convenience function that builds a radial wind profile and normalizes it.
+
+normalize_wind_hazard_with_tail:
+    ITCHI v0.2 normalization: wind hazard inside R_direct plus a tail that
+    decays with the wind profile down to zero at the attribution radius.
 """
 
 from __future__ import annotations
@@ -308,3 +312,76 @@ def compute_wind_hazard_from_profile(
         )
 
     return wind_hazard
+
+
+def normalize_wind_hazard_with_tail(
+    wind_kt: ArrayLike,
+    vmax_kt: float,
+    direct_mask: np.ndarray | xr.DataArray,
+    outer_wind_kt: float | ArrayLike,
+    h34: float = 0.2,
+    reference_wind_kt: float = TROPICAL_STORM_WIND_KT,
+    epsilon: float = DEFAULT_EPSILON,
+) -> ArrayLike:
+    """
+    ITCHI v0.2 wind hazard with an outer tail.
+
+    Inside the direct region (r <= R_direct_q) of a system with
+    Vmax > reference_wind_kt:
+
+        H_W = h34 + (1 - h34) * clip((V - V34) / (Vmax - V34), 0, 1)
+
+    Outside the direct region, and everywhere for Vmax <= reference_wind_kt:
+
+        H_W = h34 * clip((V - V_out) / (V34 - V_out), 0, 1)
+
+    where V34 = reference_wind_kt and V_out is the wind at the attribution
+    radius of the same quadrant, so the tail decays with the wind profile and
+    vanishes at the attribution boundary. If V(R_direct_q) = V34 (W06 profile
+    calibrated to R34), H_W is continuous at R_direct_q with value h34.
+
+    h34 is the hazard assigned to the onset of tropical-storm-force winds;
+    below 34 kt sustained, wind damage is small, so h34 should stay low
+    (default 0.2, the upper bound of the lowest SIAT-style class).
+
+    Parameters
+    ----------
+    wind_kt : numpy.ndarray or xarray.DataArray
+        Wind speed field in knots.
+    vmax_kt : float
+        Maximum sustained wind in knots.
+    direct_mask : numpy.ndarray or xarray.DataArray
+        True inside the direct region.
+    outer_wind_kt : float, numpy.ndarray or xarray.DataArray
+        Wind speed (kt) at the attribution radius of each cell's quadrant.
+    h34 : float, default=0.2
+        Hazard at V = V34; must be in [0, 1].
+    reference_wind_kt : float, default=34.0
+        Tropical-storm-force threshold V34 in knots.
+    epsilon : float, default=1e-6
+        Small value for numerical stability.
+
+    Returns
+    -------
+    numpy.ndarray or xarray.DataArray
+        Normalized wind hazard in [0, 1].
+    """
+    _validate_positive_scalar(vmax_kt, "vmax_kt")
+    _validate_positive_scalar(reference_wind_kt, "reference_wind_kt")
+    if not 0.0 <= float(h34) <= 1.0:
+        raise ValueError(f"h34 must be in [0, 1]. Received: {h34}")
+
+    where = xr.where if _contains_xarray_object(wind_kt, direct_mask, outer_wind_kt) else np.where
+    v34 = float(reference_wind_kt)
+
+    tail_den = np.maximum(v34 - outer_wind_kt, epsilon)
+    tail = h34 * _clip_unit_interval((wind_kt - outer_wind_kt) / tail_den)
+
+    if float(vmax_kt) <= v34:
+        return _clip_unit_interval(tail)
+
+    inner = h34 + (1.0 - h34) * _clip_unit_interval(
+        (wind_kt - v34) / max(float(vmax_kt) - v34, epsilon)
+    )
+
+    return _clip_unit_interval(where(direct_mask, inner, tail))

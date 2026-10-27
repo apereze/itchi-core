@@ -15,6 +15,8 @@ Integration with the ITCHI pipeline (no changes to existing modules)
   ``radii.resolve_direct_radius``.
 - Optional W06 wind field -> ``compute_w06_wind_hazard``, passed to the
   pipeline as ``wind_hazard_normalized``.
+- ITCHI v0.2 wind with outer tail -> ``compute_w06_wind_hazard_with_tail``
+  (used by the pipeline with ``wind_model="w06_tail"``).
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from itchi.constants import QUADRANTS, TROPICAL_STORM_WIND_KT
 from itchi.rocloud import DEFAULT_ROCLOUD_COLUMN_MAP
 from itchi.tracks import DEFAULT_R34_COLUMN_MAP
 from itchi.units import convert_radius_to_km
-from itchi.wind import normalize_wind_hazard
+from itchi.wind import normalize_wind_hazard, normalize_wind_hazard_with_tail
 from itchi.wind_profiles import (
     KNOT_TO_MS,
     V_OUTER_PA21_MS,
@@ -287,3 +289,113 @@ def compute_w06_wind_hazard(
         reference_wind_kt=reference_wind_kt,
         below_threshold_mode=below_threshold_mode,
     )
+
+
+def compute_w06_wind_hazard_with_tail(
+    radius_km: Any,
+    direct_radius_km: Any,
+    attribution_radius_km: Any,
+    vmax_kt: float,
+    lat: float,
+    rmw_km: float | None = None,
+    r34_mean_km: float | None = None,
+    x1_km: float | None = None,
+    h34: float = 0.2,
+    reference_wind_kt: float = TROPICAL_STORM_WIND_KT,
+    **profile_kwargs: Any,
+) -> dict[str, Any]:
+    """
+    ITCHI v0.2 wind hazard from the W06 profile, with an outer tail.
+
+    1. W06 profile for (vmax, lat, rmw). If r34_mean_km (observed azimuthal
+       mean R34, km) is given and x1_km is None, X1 is fitted so that
+       V(r34_mean_km) = 34 kt; otherwise the W06 regression is used.
+    2. Quadrant asymmetry: the radius is scaled by s = R34_mean / R_direct_q,
+       so V = 34 kt at each quadrant's R_direct_q (only with a calibrated
+       profile; s = 1 otherwise).
+    3. V_out = V(s * R_attr_q) is the wind at the attribution radius.
+    4. wind.normalize_wind_hazard_with_tail: inside R_direct_q,
+       H_W = h34 + (1 - h34)(V - 34)/(Vmax - 34); outside,
+       H_W = h34 (V - V_out)/(34 - V_out), zero at R_attr_q.
+
+    The direct/indirect/exterior masks are applied later by the pipeline.
+
+    Parameters
+    ----------
+    radius_km, direct_radius_km, attribution_radius_km : array-like
+        Distance to the center and per-cell R_direct_q and R_attr_q (km).
+        numpy arrays or xarray DataArrays of the same shape.
+    vmax_kt, lat : float
+        Maximum sustained wind (kt) and center latitude (degrees).
+    rmw_km : float or None
+        Observed RMW (km); None or NaN uses the empirical regression.
+    r34_mean_km : float or None
+        Observed azimuthal-mean R34 (km) for calibration.
+    x1_km : float or None
+        Explicit X1 (km); disables calibration.
+    h34 : float, default=0.2
+        Hazard at the 34-kt radius.
+    reference_wind_kt : float, default=34.0
+        Tropical-storm-force threshold.
+    **profile_kwargs : Any
+        Passed to Willoughby2006Profile (e.g. rmax_variant).
+
+    Returns
+    -------
+    dict[str, Any]
+        "H_W" (hazard), "wind_kt" (W06 wind), "outer_wind_kt", "x1_km",
+        "x1_calibrated" and "radius_scale".
+    """
+    template = radius_km if hasattr(radius_km, "dims") else None
+    r = np.asarray(radius_km, dtype=float)
+    r_dir = np.broadcast_to(np.asarray(direct_radius_km, dtype=float), r.shape)
+    r_att = np.broadcast_to(np.asarray(attribution_radius_km, dtype=float), r.shape)
+
+    vmax_ms = np.atleast_1d(float(vmax_kt) * KNOT_TO_MS)
+    latitude = np.atleast_1d(float(lat))
+    rmw = None if rmw_km is None else np.atleast_1d(float(rmw_km))
+
+    first = Willoughby2006Profile(vmax_ms, latitude, rmw, **profile_kwargs)
+    calibrated = False
+    x1 = None if x1_km is None else np.atleast_1d(float(x1_km))
+    if x1 is None and r34_mean_km is not None and np.isfinite(r34_mean_km) \
+            and float(vmax_kt) > reference_wind_kt:
+        fit = fit_x1_to_radius(vmax_ms, latitude, first.rmax,
+                               np.atleast_1d(float(r34_mean_km)), **profile_kwargs)
+        if np.isfinite(fit[0]):
+            x1, calibrated = fit, True
+
+    profile = Willoughby2006Profile(vmax_ms, latitude, first.rmax, x1_km=x1, **profile_kwargs)
+
+    scale = np.ones_like(r)
+    if calibrated:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            s = float(r34_mean_km) / r_dir
+        scale = np.where(np.isfinite(s) & (s > 0.0), s, 1.0)
+
+    wind_kt = profile(r * scale) / KNOT_TO_MS
+    outer_kt = profile(r_att * scale) / KNOT_TO_MS
+    direct = r <= r_dir
+
+    hazard = normalize_wind_hazard_with_tail(
+        wind_kt=wind_kt,
+        vmax_kt=float(vmax_kt),
+        direct_mask=direct,
+        outer_wind_kt=outer_kt,
+        h34=h34,
+        reference_wind_kt=reference_wind_kt,
+    )
+
+    def _wrap(values: np.ndarray) -> Any:
+        if template is None:
+            return values
+        return template.copy(data=np.asarray(values, dtype=float))
+
+    return {
+        "H_W": _wrap(hazard),
+        "wind_kt": _wrap(wind_kt),
+        "outer_wind_kt": _wrap(outer_kt),
+        "x1_km": float(profile.x1[0]),
+        "x1_calibrated": calibrated,
+        "radius_scale": _wrap(scale),
+    }

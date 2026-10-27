@@ -7,6 +7,81 @@ and this project uses semantic versioning principles while the API is under acti
 
 ---
 
+## [0.2.0] - 2026-10-26
+
+ITCHI v0.2 keeps the v0.1 structure (direct, indirect and exterior regions;
+bounded unions) and changes the precipitation and wind hazards. All v0.2
+options are opt-in in the pipeline; the defaults reproduce v0.1.
+
+### Added
+
+- `precipitation.compute_precipitation_hazard_ramp`: general node ramp
+  (R3 = Q90/Q95/Q99 reproduces v0.1; `RAMP_R4_NODES` = Q75/Q90/Q95/Q99).
+- `precipitation.compute_precipitation_matrix_hazard`: P6 ramp R4 escalated
+  towards Q95 -> 0.8 by persistence (R24 from Q90 to Q95 of its climatology)
+  and antecedent rain (A72 from 0 to Q75), weights combined as a product
+  (`PRECIP_MATRIX_V02`). Continuous form of "P95-P99 with R24 >= P95 and
+  A72 >= P75 -> maximum", calibrated with municipality-cyclone pairs
+  (maximum-level PSS 0.413 -> 0.514; 0.550 -> 0.670 for disasters).
+- `precipitation.compute_antecedent_precipitation`: exclusive antecedent
+  A_d(T) over (T-d-6h, T-6h] or running sum R_d(T), NaN across gaps.
+- `wind.normalize_wind_hazard_with_tail` and
+  `parametric_radii.compute_w06_wind_hazard_with_tail`: W06 wind calibrated to
+  the observed mean R34, quadrant-normalized radius (V = 34 kt at each
+  R_direct_q), hazard h34 + (1 - h34)(V - 34)/(Vmax - 34) inside R_direct and a
+  tail h34 (V - V_out)/(34 - V_out) that vanishes at the attribution radius.
+- `components`: optional indirect wind; H_ind = 1 - (1 - H_Wind)(1 - H_Pind).
+  Outputs `H_Wdir` and `H_Wind` when enabled.
+- `pipeline.compute_itchi_snapshot_from_grid`: `precipitation_hazard`,
+  `wind_model` ("v01" | "w06_tail"), `wind_tail_h34`, `r34_mean_km`,
+  `w06_profile_kwargs`; result reports `itchi_version`,
+  `precipitation_hazard_source` and W06 metadata.
+- `tests/test_v02.py`.
+- Scripts: MSWEP V3.16 6-h accumulations and 6/24/72-h percentiles with
+  effective-sample sufficiency (`scripts/percentiles_6h.py --durations`),
+  TC-associated disaster declarations vs 6/24/72-h rain
+  (`declaratorias_6h.py`), and municipality-cyclone verification pairs inside
+  the W06 (PA21) radius with positives and negatives (`negativos_w06.py`).
+- Notebooks (`notebooks/second test/`): `05_itchi_v02_mejoras` (Cristóbal 2020
+  and Odile 2014, v0.1 vs v0.2), `06_verificacion_metricas_figuras`
+  (verification metrics explained and all figures of the national
+  verification), `07_itchi_v02_peligro_por_snapshot` (hazard by snapshot,
+  attribution of changes by step, duration and timing of alerts) and
+  `08_itchi_v01_v02_mapas_por_posicion` (v0.1 vs v0.2 maps at every position).
+- `docs/verification_v02.md`: data, design, metrics, results, case studies,
+  limitations, reproduction and open decisions for v0.3.
+
+### Changed
+
+- Version 0.2.0 (`pyproject.toml`, `constants.ITCHI_VERSION`, `configs/default.yaml`).
+- `configs/default.yaml` documents the v0.2 matrix and wind tail.
+- README, `docs/methodology.md`, `docs/declaratorias.md`, `notebooks/README.md`
+  and `.gitignore` updated for v0.2.
+- With `wind_model="w06_tail"`, tropical depressions get wind hazard below
+  h34 (v0.1 normalized V/Vmax inside the fallback direct radius).
+
+### Notes
+
+- The escalation rule was selected among five candidates on the same pairs;
+  cross-validation by year/storm and bootstrap intervals are pending.
+  h34 = 0.2 is provisional.
+- Declaration-cyclone association is by dates (nearest active cyclone);
+  about 30 % of declared pairs were mis-associated and excluded.
+- 72-h P99/P99.9 are not robust (overlapping windows) and are not used.
+- At the maximum level the escalation raises PSS and SEDI but lowers CSI, ETS
+  and HSS (frequency bias 3.1 -> 4.7): it trades false alarms for detection on
+  purpose, because declarations under-report impacts.
+- The default wind tail (to the attribution radius) gives wind hazard to 96 %
+  of the verification pairs and removes the skill of SIAT class 1
+  (PSS 0.45 -> 0.03); cutting it at 17 kt keeps the wind information
+  (AUC 0.85) and restores class 1 (PSS 0.49). Open decision D1 for v0.3.
+- Case studies (Cristóbal 2020, Odile 2014): POD = 1 in v0.1 and v0.2, so the
+  event-level PSS can only reflect the extent of the alert; v0.2 does not
+  improve it. Odile has 6 municipalities with a declaration.
+- Open decisions for v0.3 are listed in `docs/verification_v02.md`.
+
+---
+
 ## [0.1.0] - Initial development version
 
 ### Added

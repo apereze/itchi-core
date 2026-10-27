@@ -16,7 +16,7 @@ data/external/
 └── Rocloud/
     ├── ROCLOUD_NA.csv                # mismas tablas que dfna/dfep del artículo
     └── ROCLOUD_EP.csv
-data/processed/mswep_v3_6h_percentiles_may_nov.nc   # scripts/percentiles_6h.py
+data/processed/mswep_v3_{6,24,72}h_percentiles_may_nov.nc   # scripts/percentiles_6h.py --durations 6 24 72
 D:/MSWEP_V316_6H/mswep_v3_6h_YYYY.nc                # scripts/mswep_v3_6h_accum.py
 ```
 
@@ -72,6 +72,31 @@ mun = out["municipios"]; ev = out["eventos"]; pix = out["pixel"]
 | `declaratorias_ct_pixel_min.nc` | píxel | `P_min_decl`, `n_decl`, `P_min_menos_Pxx`, `P_min_sobre_Pxx` |
 | `qc_claves_sin_geometria.csv` | clave | claves de declaratorias sin polígono en `mun23gw` |
 
+## Extensión v0.2: multiduración y pares municipio–ciclón
+
+**Multiduración (`declaratorias_6h.py`).** Además de P6, en el paso del pico se
+clasifican R24 = (T − 24 h, T] y A72 = (T − 78 h, T − 6 h] contra los percentiles
+de su propia duración (`durations_h=(24, 72)`, `antecedent_h=(72,)`). Columnas
+nuevas en `declaratorias_ct_eventos.csv`: `R24_en_pico6`, `nivel_R24_en_pico6`,
+`A72_en_pico6`, `nivel_A72_en_pico6`, `nivel_base_pico` y `nivel_matriz_pico`
+(regla v0.2: P6 en P95–P99 con R24 ≥ P95 y A72 ≥ P75 → nivel 4; configurable
+con `escalada_clases_P6`, `escalada_condiciones` y `escalada_modo`).
+
+**Pares municipio–ciclón (`scripts/negativos_w06.py`).** Para verificar hacen
+falta negativos. Un par existe si algún píxel del municipio entra en el radio
+W06 (PA21, V = 2 m/s) del ciclón en algún paso; D = 1 si el municipio tuvo
+declaratoria asociada a ese ciclón. Resultado 2000–2025: 381 929 pares, 7 462
+con declaratoria (2.0 %). Salidas en `outputs/diagnostics/declaratorias_6h/`:
+
+| Archivo | Contenido |
+|---|---|
+| `pares_municipio_ct_w06.csv.gz` | un renglón por par: pico de 6 h, clases de P6, R24, R72 y A72 en el pico, D por tipo |
+| `verificacion_niveles_w06.csv` | POD, POFD, FAR y PSS por nivel |
+| `positivos_fuera_w06.csv` | declaratorias cuyo ciclón asignado nunca alcanza el municipio |
+
+Los resultados y su interpretación están en `docs/verification_v02.md`; las
+figuras se reproducen con `notebooks/second test/06_verificacion_metricas_figuras.ipynb`.
+
 ## Limitaciones
 
 - Solo coincidencia temporal (como en el artículo): en temporada activa casi todo paso
@@ -80,4 +105,9 @@ mun = out["municipios"]; ev = out["eventos"]; pix = out["pixel"]
 - Las fechas de la declaratoria pueden no cubrir el impacto: Delta 2020 en Cozumel da 0.8 mm
   con 5–6 oct y 101 mm (>= P99.9) con `dias_despues=1` (entrada a tierra el 7 oct).
 - Emergencia y desastre del mismo evento cuentan dos veces en `n_decl`; el mínimo no cambia.
-- El pico de 6 h no representa inundaciones fluviales ni deslizamientos por lluvia acumulada.
+- El pico de 6 h no representa inundaciones fluviales ni deslizamientos por lluvia acumulada
+  (R24 y A72 lo cubren solo en parte).
+- 3 170 pares con declaratoria (29.8 %) nunca entran al radio del ciclón asignado por fecha
+  (mediana 1 650 km): hay que asociar por nombre del ciclón (decisión D5).
+- `nivel_matriz_pico` del CSV de pares depende de la versión de la regla con que se corrió
+  `negativos_w06.py`; el notebook 06 recalcula los niveles desde las clases.
