@@ -9,10 +9,10 @@ cyclone synoptic time, not as a temporal accumulation (Q90/Q95/Q99 ramp,
 ``compute_precipitation_hazard``).
 
 ITCHI v0.2 adds (``compute_precipitation_matrix_hazard``) a continuous
-matrix that combines the 6-h snapshot P6 with the exclusive 72-h antecedent
-accumulation A72, each against its own local percentiles. Without antecedent
-rain the matrix reduces to the R4 ramp (Q75 -> 0, Q90 -> 0.25, Q95 -> 0.5,
-Q99 -> 1).
+matrix: the 6-h snapshot P6 follows the R4 ramp (Q75 -> 0, Q90 -> 0.25,
+Q95 -> 0.5, Q99 -> 1) and is escalated towards an upper ramp (Q95 -> 0.8)
+when the rain persists (R24, (T-24h, T]) on wet ground (exclusive 72-h
+antecedent A72, (T-78h, T-6h]), each against its own local percentiles.
 """
 
 from __future__ import annotations
@@ -175,32 +175,33 @@ def _compute_precipitation_hazard_xarray(
 
 
 # ============================================================
-# ITCHI v0.2: node ramps and P6 x A72 matrix
+# ITCHI v0.2: node ramps and P6 x (R24, A72) matrix
 # ============================================================
 
 # R4 ramp: the no-antecedent column of the v0.2 matrix.
 RAMP_R4_NODES: dict[str, float] = {"Q75": 0.0, "Q90": 0.25, "Q95": 0.5, "Q99": 1.0}
 
-# Continuous P6 x A72 matrix (provisional nodes, to be calibrated with
-# municipality-cyclone pairs, scripts/negativos_w06.py).
-#   p6_nodes : percentiles of the 6-h climatology used as ramp nodes
-#   columns  : A72 percentile anchoring each column -> H_P at
-#              (P6 = 0 mm, *p6_nodes). Columns are interpolated linearly in A72
-#              between anchors; below the first anchor the first column applies
-#              and above the last anchor the last one.
-# Discrete reading (SIAT-like levels on H_P: 0-0.25 low, 0.25-0.5 medium,
-# 0.5-1 high, 1 maximum):
-#   A72 <= Q75_72 : R4.
-#   A72 =  Q90_72 : P75-P90 rises to medium.
-#   A72 >= Q95_72 : one level up; P95 on very wet ground -> maximum;
-#                   light rain on saturated ground -> low.
+# Continuous P6 x (R24, A72) matrix, calibrated with municipality-cyclone pairs
+# inside the W06 radius (scripts/negativos_w06.py). Discrete rule it reproduces:
+# P6 in P95-P99 with R24 >= P95 and A72 >= P75 -> maximum level.
+#   p6_nodes   : 6-h percentiles used as ramp nodes
+#   base       : H_P at (0 mm, *p6_nodes) without escalation (R4)
+#   escalated  : H_P at the same nodes with full escalation (P95 -> 0.8, top
+#                SIAT-style class)
+#   escalation : variable -> (start, end) percentiles of that variable's own
+#                climatology; its weight goes from 0 at start to 1 at end
+#                ("0" = 0 mm)
+#   combine    : "all" -> product of weights (all conditions), "any" -> maximum
+# H_P = (1 - f) * ramp(base) + f * ramp(escalated), f in [0, 1].
 PRECIP_MATRIX_V02: dict[str, Any] = {
     "p6_nodes": ("Q75", "Q90", "Q95", "Q99"),
-    "columns": {
-        "Q75": (0.0, 0.0, 0.25, 0.5, 1.0),
-        "Q90": (0.0, 0.25, 0.375, 0.5, 1.0),
-        "Q95": (0.125, 0.25, 0.5, 1.0, 1.0),
+    "base": (0.0, 0.0, 0.25, 0.5, 1.0),
+    "escalated": (0.0, 0.0, 0.25, 0.8, 1.0),
+    "escalation": {
+        "R24": ("Q90", "Q95"),
+        "A72": ("0", "Q75"),
     },
+    "combine": "all",
 }
 
 
@@ -288,37 +289,43 @@ def compute_precipitation_hazard_ramp(
 def compute_precipitation_matrix_hazard(
     precipitation: np.ndarray | xr.DataArray,
     quantiles_6h: Mapping[str, float | np.ndarray | xr.DataArray],
-    antecedent: float | np.ndarray | xr.DataArray,
-    quantiles_antecedent: Mapping[str, float | np.ndarray | xr.DataArray],
+    escalation_values: Mapping[str, float | np.ndarray | xr.DataArray],
+    escalation_quantiles: Mapping[str, Mapping[str, float | np.ndarray | xr.DataArray]],
     matrix: Mapping[str, Any] | None = None,
     epsilon: float = DEFAULT_EPSILON,
 ) -> np.ndarray | xr.DataArray:
     """
-    ITCHI v0.2 precipitation hazard: continuous P6 x A72 matrix.
+    ITCHI v0.2 precipitation hazard: P6 ramp escalated by persistence and
+    antecedent rain.
 
-    For each matrix column c (anchored at an A72 percentile) the hazard
-    H_c(P6) is a node ramp over the 6-h percentiles. Columns are then
-    interpolated linearly in A72 between their anchors:
+        H_P = (1 - f) * H_base(P6) + f * H_esc(P6)
 
-        H_P = H_c0                                          A72 <= Qa_0
-        H_P = H_ck + (H_ck+1 - H_ck) (A72 - Qa_k)/(Qa_k+1 - Qa_k)
-        H_P = H_cK                                          A72 >= Qa_K
+    H_base and H_esc are node ramps over the local 6-h percentiles
+    (compute_precipitation_hazard_ramp). Each escalation variable v
+    (default R24 and A72) gets a weight
 
-    Where A72 or its percentiles are missing (e.g. first 72 h of a season),
-    the first column (no antecedent, R4 by default) is used.
+        f_v = clip((v - q_start) / (q_end - q_start), 0, 1)
+
+    with q_start, q_end its own local percentiles ("0" = 0 mm), and
+    f = prod(f_v) for combine="all" or max(f_v) for combine="any". A missing
+    value or percentile gives f_v = 0 (no escalation), e.g. the first 72 h of
+    a season. Because H_esc >= H_base node by node, H_P is non-decreasing in
+    P6 and in every escalation variable.
 
     Parameters
     ----------
     precipitation : numpy.ndarray or xarray.DataArray
         6-h precipitation snapshot P6 (T-6h, T].
     quantiles_6h : Mapping
-        Local 6-h percentiles by name (Q75, Q90, Q95, Q99 for the default matrix).
-    antecedent : float, numpy.ndarray or xarray.DataArray
-        Exclusive 72-h antecedent A72, i.e. precipitation in (T-78h, T-6h];
-        see compute_antecedent_precipitation.
-    quantiles_antecedent : Mapping
-        Local 72-h percentiles by name (Q75, Q90, Q95 for the default matrix).
-        A72(T) = R72(T - 6 h), so the R72 climatology applies.
+        Local 6-h percentiles by name (Q75, Q90, Q95, Q99 for the default).
+    escalation_values : Mapping
+        Escalation fields by name, e.g. {"R24": r24, "A72": a72} with
+        R24 = precipitation in (T-24h, T] and A72 = precipitation in
+        (T-78h, T-6h]; see compute_antecedent_precipitation.
+    escalation_quantiles : Mapping
+        Local percentiles of each escalation variable, e.g.
+        {"R24": {"Q90": ..., "Q95": ...}, "A72": {"Q75": ...}}. A72(T) =
+        R72(T - 6 h), so the R72 climatology applies to A72.
     matrix : Mapping or None, default=None
         Matrix definition; None uses PRECIP_MATRIX_V02.
     epsilon : float, default=1e-6
@@ -331,54 +338,49 @@ def compute_precipitation_matrix_hazard(
     """
     m = PRECIP_MATRIX_V02 if matrix is None else matrix
     p6_nodes = tuple(m["p6_nodes"])
-    columns = dict(m["columns"])
-    anchors = list(columns)
+    base, escalated = tuple(m["base"]), tuple(m["escalated"])
+    combine = m.get("combine", "all")
 
-    for anchor, values in columns.items():
+    for name, values in (("base", base), ("escalated", escalated)):
         if len(values) != len(p6_nodes) + 1:
-            raise ValueError(
-                f"Column {anchor} needs {len(p6_nodes) + 1} values "
-                f"(0 mm and {', '.join(p6_nodes)}); got {len(values)}."
-            )
-    missing = [k for k in anchors if k not in quantiles_antecedent]
-    if missing:
-        raise KeyError(f"Missing antecedent percentile(s): {missing}")
+            raise ValueError(f"{name} needs {len(p6_nodes) + 1} values (0 mm and {', '.join(p6_nodes)}).")
+    if np.any(np.asarray(escalated) < np.asarray(base)):
+        warnings.warn("escalated ramp is below the base ramp at some node.", stacklevel=2)
+    if combine not in {"all", "any"}:
+        raise ValueError(f"combine must be 'all' or 'any': {combine!r}")
 
-    table = np.asarray(list(columns.values()), dtype=float)
-    if np.any(np.diff(table, axis=0) < 0.0):
-        warnings.warn(
-            "Matrix columns are not non-decreasing in A72: wetter antecedent "
-            "conditions can lower H_P.",
-            stacklevel=2,
-        )
+    h_base = compute_precipitation_hazard_ramp(
+        precipitation, quantiles_6h, dict(zip(p6_nodes, base[1:], strict=True)),
+        zero_value=base[0], epsilon=epsilon,
+    )
+    h_esc = compute_precipitation_hazard_ramp(
+        precipitation, quantiles_6h, dict(zip(p6_nodes, escalated[1:], strict=True)),
+        zero_value=escalated[0], epsilon=epsilon,
+    )
 
-    col_hazard = [
-        compute_precipitation_hazard_ramp(
-            precipitation,
-            quantiles_6h,
-            dict(zip(p6_nodes, values[1:], strict=True)),
-            zero_value=values[0],
-            epsilon=epsilon,
-        )
-        for values in columns.values()
-    ]
+    weights = []
+    for name, (start, end) in dict(m["escalation"]).items():
+        if name not in escalation_values:
+            raise KeyError(f"Missing escalation variable: {name}")
+        qv = escalation_quantiles.get(name, {})
+        bounds = []
+        for key in (start, end):
+            if key == "0":
+                bounds.append(0.0)
+            elif key in qv:
+                bounds.append(qv[key])
+            else:
+                raise KeyError(f"Missing percentile {key} for escalation variable {name}")
+        x = escalation_values[name]
+        w = _clip_unit((x - bounds[0]) / np.maximum(bounds[1] - bounds[0], epsilon))
+        valid = np.isfinite(x) & np.isfinite(bounds[0]) & np.isfinite(bounds[1])
+        weights.append(_where(valid, w, 0.0))
 
-    a = antecedent
-    qa = [quantiles_antecedent[k] for k in anchors]
+    f = weights[0]
+    for w in weights[1:]:
+        f = f * w if combine == "all" else np.maximum(f, w)
 
-    hazard = col_hazard[-1]
-    for k in range(len(anchors) - 2, -1, -1):
-        frac = _clip_unit((a - qa[k]) / np.maximum(qa[k + 1] - qa[k], epsilon))
-        segment = col_hazard[k] + (col_hazard[k + 1] - col_hazard[k]) * frac
-        hazard = _where(a < qa[k + 1], segment, hazard)
-
-    valid_antecedent = np.isfinite(a)
-    for qk in qa:
-        valid_antecedent = valid_antecedent & np.isfinite(qk)
-
-    hazard = _where(valid_antecedent, hazard, col_hazard[0])
-
-    return _clip_unit(hazard)
+    return _clip_unit((1.0 - f) * h_base + f * h_esc)
 
 
 def compute_antecedent_precipitation(

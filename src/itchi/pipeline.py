@@ -18,7 +18,7 @@ tropical cyclone data.
 
 ITCHI v0.2 options (defaults reproduce v0.1):
 
-- ``precipitation_hazard``: precomputed H_P, e.g. the P6 x A72 matrix of
+- ``precipitation_hazard``: precomputed H_P, e.g. the P6 x (R24, A72) matrix of
   precipitation.compute_precipitation_matrix_hazard; q90/q95/q99 are then
   not used.
 - ``wind_model="w06_tail"``: W06 wind profile calibrated to the observed
@@ -106,7 +106,7 @@ def compute_itchi_snapshot(
     run_quality_control : bool, default=False
         Whether to run standard snapshot quality-control checks.
     precipitation_hazard : numpy.ndarray, xarray.DataArray or None
-        ITCHI v0.2: precomputed H_P (e.g. P6 x A72 matrix). If given,
+        ITCHI v0.2: precomputed H_P (e.g. P6 x (R24, A72) matrix). If given,
         q90/q95/q99 are ignored.
     wind_hazard_indirect : numpy.ndarray, xarray.DataArray or None
         ITCHI v0.2: wind hazard with outer tail for the indirect region.
@@ -279,7 +279,7 @@ def compute_itchi_snapshot_from_grid(
     run_quality_control : bool, default=False
         Whether to run standard snapshot quality-control checks.
     precipitation_hazard : numpy.ndarray, xarray.DataArray or None
-        ITCHI v0.2: precomputed H_P (e.g. P6 x A72 matrix); q90/q95/q99 are
+        ITCHI v0.2: precomputed H_P (e.g. P6 x (R24, A72) matrix); q90/q95/q99 are
         then ignored and may be None.
     wind_model : {"v01", "w06_tail"}, default="v01"
         "v01": wind hazard only inside R_direct (provided or modified Rankine).

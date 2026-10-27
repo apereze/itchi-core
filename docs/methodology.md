@@ -439,40 +439,56 @@ ITCHI v0.2 keeps the regions, masks and bounded unions of v0.1 and changes
 the precipitation and wind hazards. Both changes are opt-in in the pipeline
 (`precipitation_hazard`, `wind_model="w06_tail"`).
 
-### Precipitation: P6 × A72 matrix
+### Precipitation: P6 ramp escalated by persistence and antecedent rain
 
-Two supports are combined, each against its own local percentiles (MSWEP
+Three supports are combined, each against its own local percentiles (MSWEP
 V3.16, May–November, wet windows):
 
-| Symbol | Definition |
-|:-------|:-----------|
-| $P_6(T)$ | Precipitation in $(T-6\,\mathrm{h}, T]$ |
-| $A_{72}(T)$ | Exclusive antecedent: precipitation in $(T-78\,\mathrm{h}, T-6\,\mathrm{h}]$, $A_{72}(T) = R_{72}(T-6\,\mathrm{h})$ |
+| Symbol | Definition | Role |
+|:-------|:-----------|:-----|
+| $P_6(T)$ | Precipitation in $(T-6\,\mathrm{h}, T]$ | Intensity (ramp) |
+| $R_{24}(T)$ | Precipitation in $(T-24\,\mathrm{h}, T]$ | Persistence of the current event |
+| $A_{72}(T)$ | Precipitation in $(T-78\,\mathrm{h}, T-6\,\mathrm{h}]$, $A_{72}(T) = R_{72}(T-6\,\mathrm{h})$ | Antecedent wetness |
 
-For each column $c$, anchored at an $A_{72}$ percentile $Q^{72}_c$, the
-hazard $H_c(P_6)$ is a piecewise-linear ramp through the nodes
-$(0, h_{c,0}), (Q^{6}_{75}, h_{c,1}), (Q^{6}_{90}, h_{c,2}), (Q^{6}_{95}, h_{c,3}), (Q^{6}_{99}, h_{c,4})$,
-constant above $Q^6_{99}$. Columns are interpolated linearly in $A_{72}$:
+$P_6$ follows two node ramps over its local percentiles, the base ramp R4 and
+an escalated ramp:
 
-$$
-H_P = H_{c_k} + \left(H_{c_{k+1}} - H_{c_k}\right)
-\frac{A_{72} - Q^{72}_{c_k}}{Q^{72}_{c_{k+1}} - Q^{72}_{c_k}},
-\qquad Q^{72}_{c_k} \le A_{72} < Q^{72}_{c_{k+1}}
-$$
-
-with the first column below the first anchor and the last column above the
-last one. Provisional nodes:
-
-| $A_{72}$ anchor | 0 mm | $Q^6_{75}$ | $Q^6_{90}$ | $Q^6_{95}$ | $Q^6_{99}$ |
+| Ramp | 0 mm | $Q^6_{75}$ | $Q^6_{90}$ | $Q^6_{95}$ | $Q^6_{99}$ |
 |:--|--:|--:|--:|--:|--:|
-| $Q^{72}_{75}$ (no antecedent, R4) | 0 | 0 | 0.25 | 0.5 | 1 |
-| $Q^{72}_{90}$ | 0 | 0.25 | 0.375 | 0.5 | 1 |
-| $Q^{72}_{95}$ (very wet) | 0.125 | 0.25 | 0.5 | 1 | 1 |
+| $H_{\text{base}}$ (R4) | 0 | 0 | 0.25 | 0.5 | 1 |
+| $H_{\text{esc}}$ | 0 | 0 | 0.25 | 0.8 | 1 |
 
-$H_P$ is non-decreasing in $P_6$ and in $A_{72}$. Where $A_{72}$ is missing
-(first 72 h of a season) the no-antecedent column is used. Only $Q^{72}_{75}$,
-$Q^{72}_{90}$ and $Q^{72}_{95}$ are used because 72-h windows overlap and
-P99/P99.9 of $A_{72}$ are not robust.
+and
+
+$$
+H_P = (1 - f)\,H_{\text{base}}(P_6) + f\,H_{\text{esc}}(P_6), \qquad
+f = f_{R24}\, f_{A72},
+$$
+
+$$
+f_{R24} = \mathrm{clip}\!\left(\frac{R_{24} - Q^{24}_{90}}{Q^{24}_{95} - Q^{24}_{90}}\right), \qquad
+f_{A72} = \mathrm{clip}\!\left(\frac{A_{72}}{Q^{72}_{75}}\right).
+$$
+
+Escalation therefore acts only from $Q^6_{90}$ upwards and is largest at
+$Q^6_{95}$ (0.5 → 0.8, the upper SIAT-style class). It is the continuous form
+of the discrete rule "P6 in P95–P99 with $R_{24} \ge$ P95 and $A_{72} \ge$ P75
+→ maximum". A missing $R_{24}$ or $A_{72}$ (first 72 h of a season) gives no
+escalation. $H_P$ is non-decreasing in $P_6$, $R_{24}$ and $A_{72}$.
+
+**Calibration.** Municipality–cyclone pairs inside the W06 (PA21) radius
+(381 929 pairs, 2000–2025; 2 % with a TC-associated declaration,
+`scripts/negativos_w06.py`). With the 6-h ramp alone, the Peirce skill score
+(PSS = POD − POFD) is 0.446, 0.533, 0.547 and 0.413 for levels ≥ 1…4. The
+empirical probability of a declaration rises with persistence and antecedent
+rain only for P6 ≥ P95 (P95–P99: 2.0 % with $R_{24}$ < P95; 4.0–10.3 % with
+$R_{24}$ ≥ P95 as $A_{72}$ increases). The escalation leaves levels 1–3
+unchanged and raises the maximum-level PSS to 0.514 (0.670 for disaster
+declarations), with POFD 0.082 (0.052 without escalation). A more frequent
+maximum was chosen deliberately: declarations under-report impacts, so part of
+the measured false detections are unreported events. The rule was selected
+among five candidates on the same pairs; cross-validation by year or storm is
+pending.
 
 ### Wind: W06 profile with outer tail
 
@@ -506,21 +522,39 @@ The direct component and the final index keep the v0.1 formulas.
 
 ### Calibration status
 
-Matrix nodes and $h_{34}$ are provisional. They are calibrated with
+The escalation rule is calibrated (see above); $h_{34}$ is provisional. Both are evaluated with
 municipality–cyclone pairs inside the W06 (PA21) radius, labelled with
 TC-associated disaster declarations (`scripts/negativos_w06.py`: POD, FAR,
 POFD, Peirce skill score by hazard level).
+
+### Verification summary and open issues
+
+Full results, case studies and the list of open decisions are in
+[`verification_v02.md`](verification_v02.md). The points that affect the
+formulas above are:
+
+- **Wind tail.** With the tail down to the attribution radius (median 743 km),
+  96 % of the verification pairs get $H_W > 0$ and SIAT class 1 loses its
+  skill (PSS 0.03). Cutting the tail where $V$ falls to 17 kt keeps most of the
+  information of the wind (AUC 0.85 against 0.82 without wind) and restores
+  class 1 (PSS 0.49). Proposed for v0.3, together with $h_{34} = 0.3$.
+- **Scores for rare events.** The escalation raises PSS and SEDI at the
+  maximum level but lowers CSI, ETS and HSS; it trades false alarms for
+  detection.
+- **Relative wind normalization.** Inside $R_{	ext{direct}}$ the hazard is
+  relative to the storm's own $V_{\max}$ (as in v0.1): every storm with
+  $V_{\max} > 34$ kt reaches $H_W = 1$ at its RMW.
 
 ---
 
 ## Current Limitations
 
-ITCHI v0.1 is an operational research prototype. Important current limitations include:
+ITCHI is a research prototype. Important current limitations (v0.2) include:
 
-- **Wind profile:** Simplified first-order power-law approximation; not a full parametric model
-- **Climatology:** Precipitation percentiles ($Q_{90}, Q_{95}, Q_{99}$) assumed to be precomputed; no dedicated climatology module yet
-- **Temporal alignment:** Precipitation snapshot alignment not yet implemented as a dedicated module
-- **Validation:** Real-case validation against impact or disaster records not yet conducted
+- **Wind profile:** v0.1 uses a modified Rankine profile; v0.2 uses W06 calibrated to the observed R34, but the extent of its outer tail is still open (see above)
+- **Climatology:** local percentiles of 6, 24 and 72 h from MSWEP V3.16 are computed by `scripts/percentiles_6h.py`; 72-h P99/P99.9 are not robust
+- **Antecedent wetness:** $A_{72}$ is antecedent rain, not soil moisture
+- **Validation:** verification against TC-associated disaster declarations exists (381 929 pairs) but the declaration–cyclone association is by date (29.8 % of declared pairs excluded), the rule was chosen on the same pairs, and confidence intervals are pending
 - **Sensitivity analysis:** Parameter sensitivity for $\alpha, \beta, \lambda, \mu$ pending formal analysis
 - **Computational efficiency:** Current implementation prioritizes transparency and modularity over optimization
 
@@ -552,7 +586,8 @@ This methodology document defines the mathematical framework, design principles,
 
 ### Related Documentation
 
-- [Installation Guide](./INSTALL.md)
-- [API Reference](./API.md)
-- [User Guide](./USER_GUIDE.md)
+- [v0.2 verification and open decisions](./verification_v02.md)
+- [Disaster declarations](./declaratorias.md)
+- [API Reference](./api.md)
+- [Workflows](./workflows.md)
 - [Examples](../examples/)

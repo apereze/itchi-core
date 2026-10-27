@@ -1,5 +1,5 @@
 """
-Tests for ITCHI v0.2: P6 x A72 precipitation matrix and W06 wind with outer tail.
+Tests for ITCHI v0.2: P6 x (R24, A72) precipitation matrix and W06 wind with outer tail.
 """
 
 from __future__ import annotations
@@ -22,7 +22,14 @@ from itchi.precipitation import (
 from itchi.wind import normalize_wind_hazard_with_tail
 
 Q6 = {"Q75": 8.0, "Q90": 18.0, "Q95": 28.0, "Q99": 50.0}
+Q24 = {"Q90": 40.0, "Q95": 55.0}
 Q72 = {"Q75": 30.0, "Q90": 60.0, "Q95": 80.0}
+QESC = {"R24": Q24, "A72": Q72}
+ESC_NODES = {"Q75": 0.0, "Q90": 0.25, "Q95": 0.8, "Q99": 1.0}
+
+
+def _matrix(p, r24, a72, **kw):
+    return compute_precipitation_matrix_hazard(p, Q6, {"R24": r24, "A72": a72}, QESC, **kw)
 P_NODES = np.array([0.0, 4.0, 8.0, 13.0, 18.0, 23.0, 28.0, 39.0, 50.0, 80.0])
 
 
@@ -52,38 +59,47 @@ def test_ramp_propagates_nan_and_rejects_decreasing_nodes() -> None:
 # ------------------------------------------------------------------ matriz
 
 
-@pytest.mark.parametrize("a72", [0.0, 30.0, np.nan])
-def test_matrix_without_antecedent_is_r4(a72: float) -> None:
-    h = compute_precipitation_matrix_hazard(P_NODES, Q6, a72, Q72)
-    np.testing.assert_allclose(h, compute_precipitation_hazard_ramp(P_NODES, Q6, RAMP_R4_NODES))
-
-
-def test_matrix_saturated_column_and_interpolation() -> None:
-    hi = compute_precipitation_matrix_hazard(P_NODES, Q6, 200.0, Q72)
-    np.testing.assert_allclose(hi[[0, 2, 4, 6, 8]], [0.125, 0.25, 0.5, 1.0, 1.0])
-
-    r4 = compute_precipitation_hazard_ramp(P_NODES, Q6, RAMP_R4_NODES)
-    c1 = compute_precipitation_hazard_ramp(
-        P_NODES, Q6, {"Q75": 0.25, "Q90": 0.375, "Q95": 0.5, "Q99": 1.0}
+@pytest.mark.parametrize(("r24", "a72"), [(0.0, 100.0), (40.0, 100.0), (100.0, 0.0), (np.nan, 100.0), (100.0, np.nan)])
+def test_matrix_without_escalation_is_r4(r24: float, a72: float) -> None:
+    np.testing.assert_allclose(
+        _matrix(P_NODES, r24, a72), compute_precipitation_hazard_ramp(P_NODES, Q6, RAMP_R4_NODES)
     )
-    mid = compute_precipitation_matrix_hazard(P_NODES, Q6, 45.0, Q72)   # midway Q75-Q90
-    np.testing.assert_allclose(mid, 0.5 * (r4 + c1))
+
+
+def test_matrix_full_escalation() -> None:
+    h = _matrix(P_NODES, 60.0, 30.0)          # R24 >= Q95_24 and A72 >= Q75_72
+    np.testing.assert_allclose(h, compute_precipitation_hazard_ramp(P_NODES, Q6, ESC_NODES))
+    np.testing.assert_allclose(h[[0, 2, 4, 6, 8]], [0.0, 0.0, 0.25, 0.8, 1.0])
+
+
+def test_matrix_partial_escalation_is_product_of_weights() -> None:
+    r4 = compute_precipitation_hazard_ramp(P_NODES, Q6, RAMP_R4_NODES)
+    esc = compute_precipitation_hazard_ramp(P_NODES, Q6, ESC_NODES)
+    h = _matrix(P_NODES, 47.5, 15.0)          # f_R24 = 0.5, f_A72 = 0.5 -> f = 0.25
+    np.testing.assert_allclose(h, 0.75 * r4 + 0.25 * esc)
+    from itchi.precipitation import PRECIP_MATRIX_V02
+    h_any = _matrix(P_NODES, 47.5, 15.0, matrix={**PRECIP_MATRIX_V02, "combine": "any"})
+    np.testing.assert_allclose(h_any, 0.5 * r4 + 0.5 * esc)
 
 
 def test_matrix_is_monotone_and_bounded() -> None:
-    p, a = np.meshgrid(np.linspace(0.0, 80.0, 161), np.linspace(0.0, 150.0, 151))
-    h = compute_precipitation_matrix_hazard(p, Q6, a, Q72)
-    assert (np.diff(h, axis=1) >= -1e-12).all()
-    assert (np.diff(h, axis=0) >= -1e-12).all()
+    p = np.linspace(0.0, 80.0, 81)[None, None, :]
+    r24 = np.linspace(0.0, 80.0, 41)[None, :, None]
+    a72 = np.linspace(0.0, 60.0, 31)[:, None, None]
+    h = _matrix(p, r24, a72)
+    for axis in range(3):
+        assert (np.diff(h, axis=axis) >= -1e-12).all()
     assert h.min() >= 0.0 and h.max() <= 1.0
 
 
 def test_matrix_xarray() -> None:
     p = xr.DataArray(P_NODES, dims="x")
     q6 = {k: xr.full_like(p, v) for k, v in Q6.items()}
-    h = compute_precipitation_matrix_hazard(p, q6, xr.full_like(p, 200.0), Q72)
+    h = compute_precipitation_matrix_hazard(
+        p, q6, {"R24": xr.full_like(p, 60.0), "A72": xr.full_like(p, 30.0)}, QESC
+    )
     assert isinstance(h, xr.DataArray)
-    np.testing.assert_allclose(h.values, compute_precipitation_matrix_hazard(P_NODES, Q6, 200.0, Q72))
+    np.testing.assert_allclose(h.values, _matrix(P_NODES, 60.0, 30.0))
 
 
 def test_antecedent_precipitation_window_and_gap() -> None:
@@ -172,7 +188,7 @@ def test_pipeline_precomputed_hazard_matches_v01() -> None:
 def test_pipeline_v02_w06_tail() -> None:
     kw = _grid_case()
     p = np.random.default_rng(0).gamma(0.7, 12.0, kw["lon"].shape)
-    hp = compute_precipitation_matrix_hazard(p, Q6, np.full(p.shape, 100.0), Q72)
+    hp = _matrix(p, np.full(p.shape, 100.0), np.full(p.shape, 100.0))
     res = compute_itchi_snapshot_from_grid(
         p, None, None, None, precipitation_hazard=hp, wind_model="w06_tail", **kw
     )

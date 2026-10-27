@@ -23,7 +23,8 @@ clase de P6, R24, R72 y A72 (antecedente exclusivo) con sus percentiles. Niveles
     base      rampa solo 6 h (P75/P90/P95/P99 -> 1..4)
     A         máximo de clases P6, R24, R72 convertido a nivel con la rampa base
     A_cap     igual, con la clase de R72 topada en P95 (P99 de 72 h no es robusto)
-    B         matriz clase P6 x grupo A72 (Config.matriz_A72)
+    B         rampa base escalada: P95-P99 -> máximo si R24 >= P95 y A72 >= P75
+              (Config.escalada_*; regla elegida con estos mismos pares)
 
 Verificación por esquema y umbral de nivel k (alerta si nivel >= k), para todos
 los positivos y por tipo: POD, FAR, POFD, Peirce (PSS = POD - POFD), CSI, sesgo.
@@ -52,7 +53,14 @@ import xarray as xr
 from tqdm.auto import tqdm
 
 import declaratorias_6h as d6
-from itchi.parametric_radii import compute_parametric_radii
+
+try:
+    from itchi.parametric_radii import compute_parametric_radii
+except ModuleNotFoundError:   # paquete no instalado: usar src/ del repo
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from itchi.parametric_radii import compute_parametric_radii
 
 KMH_PER_KT = 1.852
 TIPOS = d6.TIPOS
@@ -249,16 +257,16 @@ def build_pairs(cfg: ConfigW06, steps: pd.DataFrame, rain: pd.DataFrame, labels:
     dcols = ["D"] + [c for c in labels.columns if c.startswith("D_")]
     pr[dcols] = pr[dcols].fillna(0).astype(int)
 
-    # Niveles: rampa base, opción B y opción A (clase -> nivel con la columna 0 de la matriz)
+    # Niveles: rampa base, opción B y opción A (clase -> nivel con la rampa base)
     spec = d6.series_spec(cfg)
     labs = d6.pct_labels(xr.open_dataset(cfg.percentiles_file)["quantile"].values)
     pr = d6.combined_levels(pr, spec, labs, {24: labs, 72: labs}, cfg)
-    M = np.asarray(cfg.matriz_A72)
+    base = np.asarray(cfg.rampa_base)
     k95 = labs.index("P95") + 1
     for name, c72 in (("A", pr["nivel_R72_en_pico6"]), ("A_cap", pr["nivel_R72_en_pico6"].clip(upper=k95))):
         cl = pd.concat([pr["nivel_pico"], pr["nivel_R24_en_pico6"], c72], axis=1).where(lambda x: x >= 0)
         cmax = cl.max(axis=1)
-        pr[f"nivel_{name}_pico"] = np.where(cmax.notna(), M[cmax.fillna(0).astype(int), 0], np.nan)
+        pr[f"nivel_{name}_pico"] = np.where(cmax.notna(), base[cmax.fillna(0).astype(int)], np.nan)
     return pr
 
 

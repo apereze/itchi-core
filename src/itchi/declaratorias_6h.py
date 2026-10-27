@@ -50,7 +50,8 @@ Multiduración (requiere percentiles_6h.py --durations 24 72):
 
     nivel_multidur_pico  opción A: máximo de las clases de P6, R24 y R72
     nivel_base_pico      rampa solo 6 h: <P75, P75, P90, P95, P99 -> 0..4
-    nivel_matriz_pico    opción B: matriz clase P6 x clase A72 (Config.matriz_A72)
+    nivel_matriz_pico    opción B: rampa base escalada; P95-P99 -> máximo si R24 >= P95 y A72 >= P75
+                         (calibrada con negativos_w06.py; ver Config.escalada_*)
 
 Salidas (outputs/diagnostics/declaratorias_6h/):
 
@@ -84,7 +85,10 @@ import pandas as pd
 import xarray as xr
 from tqdm.auto import tqdm
 
-REPO = Path("/mnt/c/Users/adolf/Documents/ITCHI/itchi-core")
+# Raíz del repo: primer directorio superior con pyproject.toml (instalación editable);
+# si no se encuentra (instalación normal), el directorio de trabajo.
+REPO = next((p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").exists()),
+            Path.cwd())
 # ============================================================================
 # CONFIGURACIÓN
 # ============================================================================
@@ -124,15 +128,17 @@ class Config:
     # con lo que la clase máxima alcanzable en 72 h es P99.
     pct_var_dur: str = "p_wet_raw"
 
-    # Opción B: nivel (0 sin, 1 bajo, 2 medio, 3 alto, 4 máximo) por clase de P6
-    # (filas: <P75, P75-P90, P90-P95, P95-P99, P99-P99.9, >=P99.9) y clase de A72
-    # (columnas: <P75, P75-P95, >=P95). La columna 0 es la rampa solo 6 h.
-    matriz_A72: tuple = ((0, 0, 1),
-                         (1, 2, 2),
-                         (2, 2, 3),
-                         (3, 3, 4),
-                         (4, 4, 4),
-                         (4, 4, 4))
+    # Niveles 0 sin, 1 bajo, 2 medio, 3 alto, 4 máximo. Rampa base por clase de P6
+    # (<P75, P75-P90, P90-P95, P95-P99, P99-P99.9, >=P99.9) y escalada (opción B)
+    # calibrada con pares municipio-CT (negativos_w06.py): las clases de P6 en
+    # escalada_clases_P6 suben a escalada_nivel si se cumplen las condiciones
+    # (variable, percentil mínimo); "y" exige todas, "o" basta una. Una condición
+    # sin dato (p. ej. inicio de temporada) no escala.
+    rampa_base: tuple = (0, 1, 2, 3, 4, 4)
+    escalada_clases_P6: tuple = (3,)
+    escalada_nivel: int = 4
+    escalada_condiciones: tuple = (("R24", "P95"), ("A72", "P75"))
+    escalada_modo: str = "y"
 
     start_year: int = 2000
     end_year: int = 2025
@@ -817,8 +823,8 @@ def combined_levels(ev: pd.DataFrame, spec: dict, labels: list[str], labels_dur:
     """
     En el pico de 6 h:
       opción A  nivel_multidur_pico = máx(clase P6, clase R24, clase R72) y la duración que lo fija
-      rampa     nivel_base_pico     = columna 0 de la matriz (solo P6)
-      opción B  nivel_matriz_pico   = matriz[clase P6, grupo de A72]
+      rampa     nivel_base_pico     = Config.rampa_base[clase P6]
+      opción B  nivel_matriz_pico   = rampa base con la escalada de Config.escalada_*
     Las clases solo son comparables entre duraciones si usan los mismos percentiles.
     """
 
@@ -834,27 +840,38 @@ def combined_levels(ev: pd.DataFrame, spec: dict, labels: list[str], labels_dur:
     dom = cl.fillna(-1).to_numpy().argmax(axis=1)
     ev["duracion_dominante_pico"] = np.where(cl.notna().any(axis=1), np.array(["P6"] + r_names)[dom], None)
 
-    # Rampa solo 6 h y opción B
-    a_names = [s for s, (_, ant) in spec.items() if ant]
-    M = np.asarray(cfg.matriz_A72)
-    if not a_names:
+    # Rampa solo 6 h
+    base = np.asarray(cfg.rampa_base)
+    if labels[0] != "P75" or base.size != len(labels) + 1:
+        print(f"  Aviso: rampa_base {base.tolist()} no es compatible con los percentiles {labels}; "
+              "no se calculan nivel_base_pico ni nivel_matriz_pico.")
         return ev
-    a = a_names[0]
-    la = labels_dur[spec[a][0]]
-    if M.shape != (len(labels) + 1, 3) or labels[0] != "P75" or not {"P75", "P95"} <= set(la):
-        print(f"  Aviso: matriz_A72 {M.shape} no es compatible con los percentiles {labels} / {la}; "
-              "no se calcula nivel_matriz_pico.")
-        return ev
-
     c6 = ev["nivel_pico"].astype(float)
-    ca = ev[f"nivel_{a}_en_pico6"].astype(float)
-    ok6, oka = c6 >= 0, ca >= 0
+    ok6 = (c6 >= 0).to_numpy()
     row = np.where(ok6, c6, 0).astype(int)
-    col = ((ca >= la.index("P75") + 1).astype(int) + (ca >= la.index("P95") + 1).astype(int)).to_numpy()
+    lv_base = base[row]
+    ev["nivel_base_pico"] = np.where(ok6, lv_base, np.nan)
 
-    ev[f"grupo_{a}_pico"] = np.where(oka, np.array(GRUPOS_A, dtype=object)[col], None)
-    ev["nivel_base_pico"] = np.where(ok6, M[row, 0], np.nan)
-    ev["nivel_matriz_pico"] = np.where(ok6 & oka, M[row, col], np.nan)
+    # Grupo de A72 (para la tabla cruzada)
+    a_names = [s for s, (_, ant) in spec.items() if ant]
+    if a_names:
+        a = a_names[0]
+        la = labels_dur[spec[a][0]]
+        ca = ev[f"nivel_{a}_en_pico6"].astype(float)
+        col = ((ca >= la.index("P75") + 1).astype(int) + (ca >= la.index("P95") + 1).astype(int)).to_numpy()
+        ev[f"grupo_{a}_pico"] = np.where((ca >= 0).to_numpy(), np.array(GRUPOS_A, dtype=object)[col], None)
+
+    # Opción B: escalada por condiciones
+    conds = []
+    for var, pct in cfg.escalada_condiciones:
+        if var not in spec or f"nivel_{var}_en_pico6" not in ev:
+            print(f"  Aviso: falta {var} para la escalada; no se calcula nivel_matriz_pico.")
+            return ev
+        k = labels_dur[spec[var][0]].index(pct) + 1
+        conds.append((ev[f"nivel_{var}_en_pico6"].astype(float) >= k).to_numpy())
+    cond = np.logical_and.reduce(conds) if cfg.escalada_modo == "y" else np.logical_or.reduce(conds)
+    esc = ok6 & np.isin(row, cfg.escalada_clases_P6) & cond
+    ev["nivel_matriz_pico"] = np.where(ok6, np.where(esc, np.maximum(lv_base, cfg.escalada_nivel), lv_base), np.nan)
 
     return ev
 

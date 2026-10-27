@@ -73,19 +73,22 @@ precipitation:
     high: 95
     maximum: 99
 
-  # ITCHI v0.2: continuous P6 x A72 matrix (precipitation.compute_precipitation_matrix_hazard).
-  # Without antecedent rain it reduces to R4 (Q75 -> 0, Q90 -> 0.25, Q95 -> 0.5, Q99 -> 1).
-  # Node values are provisional: calibrate with scripts/negativos_w06.py.
+  # ITCHI v0.2: P6 ramp R4 escalated by persistence (R24) and antecedent rain (A72)
+  # (precipitation.compute_precipitation_matrix_hazard). Calibrated with
+  # municipality-cyclone pairs (scripts/negativos_w06.py); discrete rule:
+  # P6 in P95-P99 with R24 >= P95 and A72 >= P75 -> maximum.
   hazard_model: "matrix_v02"          # "ramp_v01" | "matrix_v02"
   matrix_v02:
-    snapshot_hours: 6
-    antecedent_hours: 72              # A72(T) = precipitation in (T-78h, T-6h]
+    snapshot_hours: 6                 # P6(T)  = precipitation in (T-6h, T]
     p6_nodes: ["Q75", "Q90", "Q95", "Q99"]
-    columns:                          # A72 percentile -> H_P at (0 mm, Q75, Q90, Q95, Q99)
-      Q75: [0.0, 0.0, 0.25, 0.5, 1.0]
-      Q90: [0.0, 0.25, 0.375, 0.5, 1.0]
-      Q95: [0.125, 0.25, 0.5, 1.0, 1.0]
+    base: [0.0, 0.0, 0.25, 0.5, 1.0]      # H_P at (0 mm, Q75, Q90, Q95, Q99): R4
+    escalated: [0.0, 0.0, 0.25, 0.8, 1.0] # full escalation: P95 -> 0.8
+    escalation:                       # weight 0 at start -> 1 at end (own percentiles; "0" = 0 mm)
+      R24: ["Q90", "Q95"]             # R24(T) = precipitation in (T-24h, T]
+      A72: ["0", "Q75"]               # A72(T) = precipitation in (T-78h, T-6h] (R72 climatology)
+    combine: "all"                    # "all": product of weights; "any": maximum
     climatology_6h: "data/processed/mswep_v3_6h_percentiles_may_nov.nc"
+    climatology_24h: "data/processed/mswep_v3_24h_percentiles_may_nov.nc"
     climatology_72h: "data/processed/mswep_v3_72h_percentiles_may_nov.nc"
     climatology_variable: "p_wet"
 
