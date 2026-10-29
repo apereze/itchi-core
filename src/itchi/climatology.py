@@ -243,3 +243,94 @@ def extract_standard_percentiles(
         climatology[q95_name],
         climatology[q99_name],
     )
+
+
+# ============================================================
+# ITCHI v0.2: multi-duration MSWEP percentile files
+# ============================================================
+
+
+def quantile_dataarray_to_dict(
+    percentiles: xr.DataArray,
+    quantile_dim: str = "quantile",
+) -> dict[str, xr.DataArray]:
+    """
+    Split a percentile DataArray with a quantile dimension into named fields.
+
+    Quantile levels 0.75, 0.9, 0.999 become "Q75", "Q90", "Q99.9", the names
+    used by the v0.2 ramps and precipitation matrix.
+
+    Parameters
+    ----------
+    percentiles : xarray.DataArray
+        Percentile fields with a ``quantile_dim`` dimension of levels in (0, 1).
+    quantile_dim : str, default="quantile"
+        Name of the quantile dimension.
+
+    Returns
+    -------
+    dict[str, xarray.DataArray]
+        Percentile name -> field without the quantile dimension.
+    """
+    if quantile_dim not in percentiles.dims:
+        raise KeyError(f"Missing quantile dimension: {quantile_dim!r}")
+
+    levels = [float(v) for v in percentiles[quantile_dim].values]
+    validate_quantile_levels(levels)
+
+    return {
+        f"Q{round(level * 100.0, 4):g}": percentiles.isel({quantile_dim: i}, drop=True)
+        for i, level in enumerate(levels)
+    }
+
+
+def load_percentile_climatology(
+    path: str | Any,
+    variable: str = "p_wet_raw",
+    template: xr.DataArray | None = None,
+    tolerance_deg: float = 1.0e-3,
+    quantile_dim: str = "quantile",
+) -> dict[str, xr.DataArray]:
+    """
+    Read a percentile file written by scripts/percentiles_6h.py.
+
+    Files: data/processed/mswep_v3_{6,24,72}h_percentiles_may_nov.nc. The
+    72-h file is also the climatology of the exclusive antecedent A72,
+    because A72(T) = R72(T - 6 h).
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        NetCDF file.
+    variable : str, default="p_wet_raw"
+        Percentile variable (configs/default.yaml,
+        precipitation.matrix_v02.climatology_variable).
+    template : xarray.DataArray or None, default=None
+        Precipitation field; if given, the percentiles are reindexed to its
+        lat/lon coordinates (nearest within tolerance_deg).
+    tolerance_deg : float, default=1e-3
+        Coordinate tolerance for the reindexing.
+    quantile_dim : str, default="quantile"
+        Name of the quantile dimension.
+
+    Returns
+    -------
+    dict[str, xarray.DataArray]
+        Percentile name ("Q75", "Q90", ...) -> field.
+    """
+    with xr.open_dataset(path) as ds:
+        if variable not in ds:
+            raise KeyError(f"Variable {variable!r} not found in {path}")
+        percentiles = ds[variable].load()
+
+    if template is not None:
+        spatial = {
+            dim: template[dim].values
+            for dim in template.dims
+            if dim in percentiles.dims and dim != quantile_dim and dim in template.coords
+        }
+        percentiles = percentiles.reindex(
+            spatial, method="nearest", tolerance=tolerance_deg
+        )
+
+    return quantile_dataarray_to_dict(percentiles, quantile_dim=quantile_dim)

@@ -47,6 +47,17 @@ DEFAULT_THRESHOLDS_MS: dict[str, float] = {
     "r34_km": V_R34_MS,
 }
 
+# R_W06 used by ITCHI v0.2 (compute_itchi_snapshot_v02): W06 profile with the
+# PA21 configuration (empirical Rmax, no R34 calibration), radius where
+# V = 2 m s-1. Same as the "pa21_r2_km" radius of the v0.2 verification.
+# Mirrors parametric_radii.r_w06 in configs/default.yaml.
+R_W06_DEFAULTS: dict[str, Any] = {
+    "rmax_variant": "pa21",
+    "use_observed_rmw": False,
+    "calibrate_to_r34": False,
+    "outer_threshold_ms": V_OUTER_PA21_MS,
+}
+
 
 def fit_x1_to_radius(
     vmax_ms: np.ndarray,
@@ -257,6 +268,71 @@ def parametric_direct_fallback_km(
     return value if np.isfinite(value) else None
 
 
+def compute_w06_reference_radii(
+    vmax_kt: float,
+    lat: float,
+    rmw_km: float | None = None,
+    r34_mean_km: float | None = None,
+    rmax_variant: str = R_W06_DEFAULTS["rmax_variant"],
+    use_observed_rmw: bool = R_W06_DEFAULTS["use_observed_rmw"],
+    calibrate_to_r34: bool = R_W06_DEFAULTS["calibrate_to_r34"],
+    outer_threshold_ms: float = R_W06_DEFAULTS["outer_threshold_ms"],
+    **profile_kwargs: Any,
+) -> dict[str, float]:
+    """
+    Symmetric W06 reference radii (km) of one track record.
+
+    The defaults reproduce R_W06 of the v0.2 verification (PA21: empirical
+    Rmax, no R34 calibration, outer threshold 2 m s-1).
+
+    Parameters
+    ----------
+    vmax_kt, lat : float
+        Maximum sustained wind (kt) and center latitude (degrees).
+    rmw_km : float or None
+        Observed RMW (km); used only if use_observed_rmw.
+    r34_mean_km : float or None
+        Observed azimuthal-mean R34 (km); used only if calibrate_to_r34.
+    rmax_variant : {"w06", "pa21"}, default="pa21"
+        Empirical Rmax regression.
+    use_observed_rmw, calibrate_to_r34 : bool, default=False
+        Use the observed RMW / calibrate X1 to the observed mean R34.
+    outer_threshold_ms : float, default=2.0
+        Wind (m s-1) that defines the outer radius.
+    **profile_kwargs : Any
+        Passed to Willoughby2006Profile.
+
+    Returns
+    -------
+    dict[str, float]
+        "r_outer_km" (R_W06), "r34_km" (parametric R34), "rmax_km" and
+        "x1_km". NaN where a radius is undefined (e.g. r34_km for
+        vmax <= 34 kt).
+    """
+    rmw = None
+    if use_observed_rmw and rmw_km is not None and np.isfinite(float(rmw_km)):
+        rmw = np.atleast_1d(float(rmw_km))
+
+    r34 = None
+    if calibrate_to_r34 and r34_mean_km is not None and np.isfinite(float(r34_mean_km)):
+        r34 = np.atleast_1d(float(r34_mean_km))
+
+    radii = compute_parametric_radii(
+        vmax_kt=np.atleast_1d(float(vmax_kt)),
+        lat=np.atleast_1d(float(lat)),
+        rmw_km=rmw,
+        r34_obs_km=r34,
+        thresholds_ms={"r_outer_km": float(outer_threshold_ms), "r34_km": V_R34_MS},
+        rmax_variant=rmax_variant,
+        **profile_kwargs,
+    )
+
+    return {
+        key: float(np.asarray(radii[key], dtype=float).ravel()[0])
+        for key in ("r_outer_km", "r34_km", "rmax_km", "x1_km")
+    }
+
+
 def compute_w06_wind_hazard(
     radius_km: np.ndarray,
     vmax_kt: float,
@@ -302,6 +378,7 @@ def compute_w06_wind_hazard_with_tail(
     x1_km: float | None = None,
     h34: float = 0.2,
     reference_wind_kt: float = TROPICAL_STORM_WIND_KT,
+    tail_end_wind_kt: float | None = None,
     **profile_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -313,7 +390,10 @@ def compute_w06_wind_hazard_with_tail(
     2. Quadrant asymmetry: the radius is scaled by s = R34_mean / R_direct_q,
        so V = 34 kt at each quadrant's R_direct_q (only with a calibrated
        profile; s = 1 otherwise).
-    3. V_out = V(s * R_attr_q) is the wind at the attribution radius.
+    3. V_out = V(s * R_attr_q) is the wind at the tail-end radius R_attr_q
+       (R_W06_q in compute_itchi_snapshot_v02). With tail_end_wind_kt,
+       V_out = max(V(s * R_attr_q), tail_end_wind_kt): the tail is cut at
+       that wind speed and never extends beyond R_attr_q.
     4. wind.normalize_wind_hazard_with_tail: inside R_direct_q,
        H_W = h34 + (1 - h34)(V - 34)/(Vmax - 34); outside,
        H_W = h34 (V - V_out)/(34 - V_out), zero at R_attr_q.
@@ -337,6 +417,9 @@ def compute_w06_wind_hazard_with_tail(
         Hazard at the 34-kt radius.
     reference_wind_kt : float, default=34.0
         Tropical-storm-force threshold.
+    tail_end_wind_kt : float or None, default=None
+        Optional wind speed (kt) at which the tail ends, e.g. 17 kt; must be
+        below reference_wind_kt. None keeps the tail down to R_attr_q.
     **profile_kwargs : Any
         Passed to Willoughby2006Profile (e.g. rmax_variant).
 
@@ -346,6 +429,11 @@ def compute_w06_wind_hazard_with_tail(
         "H_W" (hazard), "wind_kt" (W06 wind), "outer_wind_kt", "x1_km",
         "x1_calibrated" and "radius_scale".
     """
+    if tail_end_wind_kt is not None and not 0.0 <= float(tail_end_wind_kt) < reference_wind_kt:
+        raise ValueError(
+            f"tail_end_wind_kt must be in [0, {reference_wind_kt}). Received: {tail_end_wind_kt}"
+        )
+
     template = radius_km if hasattr(radius_km, "dims") else None
     r = np.asarray(radius_km, dtype=float)
     r_dir = np.broadcast_to(np.asarray(direct_radius_km, dtype=float), r.shape)
@@ -375,6 +463,8 @@ def compute_w06_wind_hazard_with_tail(
 
     wind_kt = profile(r * scale) / KNOT_TO_MS
     outer_kt = profile(r_att * scale) / KNOT_TO_MS
+    if tail_end_wind_kt is not None:
+        outer_kt = np.maximum(outer_kt, float(tail_end_wind_kt))
     direct = r <= r_dir
 
     hazard = normalize_wind_hazard_with_tail(

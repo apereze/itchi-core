@@ -1,0 +1,1580 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 4296b1a..8f0357a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,6 +7,65 @@ and this project uses semantic versioning principles while the API is under acti
+ 
+ ---
+ 
++## [Unreleased] - 0.2.1
++
++Consistency fixes and a single v0.2 entry point, as the base for the 0.2.1
++experiments. The v0.2 formulation (matrix, W06 tail, h34) is unchanged; the
++attribution radius changes from R_W06 (verification studies) to ROCLOUD with
++an R_W06 floor.
++
++### Added
++
++- `pipeline.compute_itchi_snapshot_v02`: ITCHI v0.2 from P6, R24, A72 and
++  their 6/24/72-h percentile climatologies. Computes the precipitation
++  matrix, the direct radius (observed R34; RMW or parametric R34 as
++  fallback), R_W06, the attribution radius and the W06 wind with a tail that
++  ends at R_W06. Reports `H_P_missing`, radii and status by quadrant,
++  `itchi_formulation = "v0.2"`. Keyword defaults equal `configs/default.yaml`.
++- `radii.resolve_attribution_radius_with_w06` and `AttributionRadii`: role
++  of R_W06 in the attribution radius by quadrant, modes `"never"`,
++  `"fallback"`, `"floor"` (default) and `"always"`; ROCLOUD <= 0 counts as
++  no detection; never below R_direct_q.
++- `parametric_radii.compute_w06_reference_radii` and `R_W06_DEFAULTS`:
++  R_W06 (V = 2 m/s, PA21 configuration), parametric R34 and Rmax of one
++  record; same as `pa21_r2_km` of the v0.2 verification.
++- `parametric_radii.compute_w06_wind_hazard_with_tail(tail_end_wind_kt=...)`:
++  optional cut of the tail at a wind speed (decision D1); the tail never
++  extends beyond the tail-end radius. Default unchanged.
++- `config.itchi_v02_settings_from_config`: keyword arguments of the v0.2
++  entry point from a configuration.
++- `climatology.load_percentile_climatology` and
++  `climatology.quantile_dataarray_to_dict`: read the
++  `mswep_v3_{6,24,72}h_percentiles_may_nov.nc` files as {"Q75": ..., ...}.
++- `tests/test_v02_snapshot.py`, including a test that the defaults of the
++  v0.2 entry point equal `configs/default.yaml` and a test that the entry
++  point reproduces the setting of the v0.2 studies.
++
++### Changed
++
++- `configs/default.yaml`: header states which function uses it;
++  precipitation as a 6-h accumulation ending at T (`precipitation_window`,
++  `temporal_alignment: "window_end"`, tolerance 0 h) instead of the v0.1
++  snapshot fields; `climatology_variable: "p_wet_raw"` (the variable of all
++  v0.2 results); `geometry.attribution_floor: "R_W06"`;
++  `parametric_radii.attribution_radius_mode: "floor"` with the documented
++  modes; new `parametric_radii.r_w06`, `wind.tail_end_radius`,
++  `wind.tail_end_wind_kt`, `precipitation.matrix_v02.nan_hazard_value` and
++  `geometry.radius_fill_strategy`.
++- README: v0.2 entry point and attribution rule; `compute_itchi_snapshot_from_grid`
++  documented as keeping the v0.1 defaults.
++- CHANGELOG: "Planned" section updated to the current state.
++
++### Fixed
++
++- The configuration declared `matrix_v02` and `w06_tail` as defaults while
++  the pipeline defaulted to v0.1 and did not read it; v0.2 now has its own
++  entry point whose defaults are tested against the file.
++- The v0.2 precipitation matrix had to be computed outside the pipeline and
++  passed as `precipitation_hazard`.
++
++---
++
+ ## [0.2.0] - 2026-10-26
+ 
+ ITCHI v0.2 keeps the v0.1 structure (direct, indirect and exterior regions;
+@@ -175,19 +234,25 @@ pip install -e .
+ 
+ ## Planned
+ 
+-### Near-term
++### Done since v0.1
++
++- GitHub Actions workflow, `docs/methodology.md`, real cases (Willa 2018,
++  Cristóbal 2020, Odile 2014), MSWEP V3.16 adapters and 6/24/72-h
++  climatology, validation against disaster declarations.
++
++### v0.2.1 (experiments on top of `compute_itchi_snapshot_v02`)
+ 
+-* Add GitHub Actions continuous integration.
+-* Add a formal `docs/methodology.md`.
+-* Add a first real-case workflow with one tropical cyclone.
+-* Add notebook for single-snapshot diagnostics.
+-* Add notebook for single-event synthetic diagnostics.
+-* Add examples for NetCDF output writing.
++* Timing convention of P6/R24/A72 against IBTrACS (late alerts in Odile).
++* Declaration–cyclone association by storm name (D5).
++* Information added by the escalation at equal POFD; cross-validation by
++  year and bootstrap by cyclone (D6).
++* Wind-tail cut and h34 in the full pipeline (D1, D2).
++* Hours-in-alert event product (D7).
++* New cyclone cases, risk cuts, landslide records, lead time of the alert
++  relative to the declaration, ITCHI aggregated by municipality.
+ 
+-### Future
++### Later (v0.3)
+ 
+-* Add climatology utilities for Q90/Q95/Q99.
+-* Add precipitation snapshot alignment utilities.
+-* Add real-data adapters for MSWEP, IBTrACS and ROCLOUD.
+-* Add validation routines using observed disaster/emergency records.
+-* Add performance optimization for large `xarray`/`dask` grids.
++* Brief vs persistent rain at >= P99 (D4), soil moisture instead of A72 (D8),
++  wind normalization (D9).
++* Performance optimization for large `xarray`/`dask` grids.
+diff --git a/README.md b/README.md
+index 1348c5f..eab3e37 100644
+--- a/README.md
++++ b/README.md
+@@ -9,11 +9,12 @@
+ 
+ Repository for the development of the computational core of **ITCHI**, a physically based tropical-cyclone hazard index. Current version: **0.2.0**.
+ 
+-**What is new in v0.2** (opt-in; the defaults reproduce v0.1). Details in [`docs/methodology.md`](docs/methodology.md), results in [`docs/verification_v02.md`](docs/verification_v02.md), changes in [`CHANGELOG.md`](CHANGELOG.md):
++**What is new in v0.2.** Entry point: `pipeline.compute_itchi_snapshot_v02` (P6, R24, A72 and their percentile climatologies; keyword defaults equal [`configs/default.yaml`](configs/default.yaml)). `compute_itchi_snapshot_from_grid` keeps the v0.1 defaults, with the v0.2 options as opt-in arguments. Details in [`docs/methodology.md`](docs/methodology.md), results in [`docs/verification_v02.md`](docs/verification_v02.md), changes in [`CHANGELOG.md`](CHANGELOG.md):
+ 
+ - **Precipitation matrix.** The 6-h rain (P6) is compared with the pixel's own percentiles (alert from P75: P75 → 0, P90 → 0.25, P95 → 0.5, P99 → 1). The P95–P99 band is escalated towards the maximum (P95 → 0.8) when the rain persists (24-h accumulation R24 ≥ P95) over wet ground (72-h antecedent A72 ≥ P75). Continuous form in `precipitation.compute_precipitation_matrix_hazard`.
+ - **Calibration with disaster declarations.** 381 929 municipality–cyclone pairs (2000–2025, 2 % with a TC-associated declaration): the escalation raises the maximum-level Peirce skill score from 0.41 to 0.51 (0.55 → 0.67 for disasters) and leaves the lower levels unchanged.
+-- **W06 wind with an outer tail.** W06 profile calibrated to the observed R34 by quadrant; hazard decays from `h34` at R34 to zero at the attribution radius and enters the indirect component (`wind_model="w06_tail"`).
++- **W06 wind with an outer tail.** W06 profile calibrated to the observed R34 by quadrant; hazard decays from `h34` at R34 to zero at R_W06 (radius where the W06/PA21 wind falls to 2 m/s) and enters the indirect component.
++- **Attribution radius.** ROCLOUD by quadrant with R_W06 as a floor: where ROCLOUD is missing, zero or smaller than R_W06, R_W06 is used (`radii.resolve_attribution_radius_with_w06`, mode `"floor"`). R_W06 bounds the wind; the attribution radius bounds the indirect precipitation.
+ - **Multi-duration climatology and verification scripts.** MSWEP V3.16 percentiles of 6, 24 and 72 h; declarations vs rain; municipality–cyclone pairs.
+ - **Case studies.** Cristóbal 2020 and Odile 2014, v0.1 vs v0.2, by snapshot and by position (notebooks 05–08).
+ - **Open for v0.3.** The default wind tail gives wind hazard to 96 % of the pairs and removes the skill of the lowest class; cutting it at 17 kt is proposed. See the decision list in [`docs/verification_v02.md`](docs/verification_v02.md#6-open-decisions-for-v03).
+@@ -95,6 +96,33 @@ python examples/smoke_test_from_tables.py \
+   --output-path outputs/events/smoke_test_from_tables.nc
+ ```
+ 
++ITCHI v0.2 for one synoptic time T (P6, R24 and A72 from MSWEP V3.16 6-h accumulations):
++
++```python
++from itchi.climatology import load_percentile_climatology
++from itchi.config import itchi_v02_settings_from_config, load_default_config
++from itchi.pipeline import compute_itchi_snapshot_v02
++from itchi.precipitation import compute_antecedent_precipitation
++
++# p6: 6-h accumulations (time, lat, lon); the window ends at each time stamp
++r24 = compute_antecedent_precipitation(p6, hours=24, exclude_current=False)
++a72 = compute_antecedent_precipitation(p6, hours=72, exclude_current=True)
++clim = {d: load_percentile_climatology(
++            f"data/processed/mswep_v3_{d}h_percentiles_may_nov.nc", template=p6)
++        for d in (6, 24, 72)}
++
++result = compute_itchi_snapshot_v02(
++    p6.sel(time=T), r24.sel(time=T), a72.sel(time=T),
++    quantiles_6h=clim[6], quantiles_24h=clim[24], quantiles_72h=clim[72],
++    lon=lon2d, lat=lat2d, center_lon=row.lon, center_lat=row.lat,
++    vmax_kt=row.vmax_kt, rmw_km=row.rmw_km,
++    r34_by_quadrant=r34_nm, rocloud_by_quadrant=rocloud_km,
++    **itchi_v02_settings_from_config(load_default_config()),  # optional: same as defaults
++)
++```
++
++`lon2d` and `lat2d` must be on the same grid and of the same type (NumPy or xarray) as `p6`.
++
+ The `outputs/` directory is ignored by Git.
+ 
+ ---
+@@ -182,7 +210,7 @@ Indirect hazard = precipitation between R_direct and ROCLOUD
+ 
+ The exterior region does not contribute to the index.
+ 
+-In the v0.2 studies the attribution radius is the W06 (PA21) radius where the wind falls to 2 m/s (`R_W06`, median 743 km over the verification pairs); it is passed through the same `rocloud_by_quadrant` argument as ROCLOUD.
++In the v0.2 verification studies the attribution radius was the W06 (PA21) radius where the wind falls to 2 m/s (`R_W06`, median 743 km over the verification pairs). From v0.2.1, `compute_itchi_snapshot_v02` uses ROCLOUD with R_W06 as a floor by quadrant, and R_W06 only as the end of the wind tail; the study setting is reproduced with `w06_attribution_mode="always"`.
+ 
+ ### `R34` versus `R_direct`
+ 
+@@ -478,7 +506,7 @@ Compiled events may be exported as NetCDF or Zarr with spatial fields, event pro
+ | Core modules | Done | Precipitation, geometry, masks, components and index |
+ | Radii and units | Done | Unit conversion, quadrants, `R_direct`, `ROCLOUD` |
+ | Wind | Done | Simple radial profile and `V*` normalization |
+-| Snapshot precipitation | Done | Valid-time snapshot selection without accumulation |
++| Snapshot precipitation | Done | v0.1: valid-time snapshot selection; v0.2: 6-h accumulation ending at T, with R24 and A72 |
+ | Climatology utilities | Done | Q90/Q95/Q99 computation and extraction utilities |
+ | Integrated pipeline | Done | Snapshot-level calculation with optional quality control |
+ | Aggregation | Done | `ITCHI_max` and `ITCHI_acc` |
+@@ -495,6 +523,7 @@ Compiled events may be exported as NetCDF or Zarr with spatial fields, event pro
+ | Real cyclone cases | Done | Willa 2018, Cristóbal 2020, Odile 2014 (notebooks) |
+ | Gridded climatology | Done | MSWEP V3.16 6/24/72-h local percentiles (`scripts/percentiles_6h.py`) |
+ | v0.2 precipitation matrix | Done | Escalation by R24 and A72, calibrated with declarations |
++| v0.2 entry point | Done (v0.2.1) | `compute_itchi_snapshot_v02`; defaults tied to `configs/default.yaml` by a test |
+ | v0.2 wind tail | Done, under review | W06 with outer tail; cut at 17 kt proposed (D1) |
+ | Impact validation | In progress | 381 929 municipality–cyclone pairs; cross-validation and association by storm name pending |
+ 
+diff --git a/configs/default.yaml b/configs/default.yaml
+index 0cb6d3d..38864bf 100644
+--- a/configs/default.yaml
++++ b/configs/default.yaml
+@@ -1,6 +1,15 @@
+ # ============================================================
+ # ITCHI Core Configuration
+ # Integrated Tropical Cyclone Hazard Index v0.2
++#
++# Which function uses these values:
++# - pipeline.compute_itchi_snapshot_v02 (v0.2 entry point). Its keyword
++#   defaults equal this file; itchi.config.itchi_v02_settings_from_config()
++#   turns this file into those keyword arguments, and
++#   tests/test_v02_snapshot.py checks that both stay equal.
++# - pipeline.compute_itchi_snapshot_from_grid keeps the v0.1 defaults
++#   (Q90/Q95/Q99 ramp, wind only inside R34) for backward compatibility and
++#   does not read this file.
+ # ============================================================
+ 
+ project:
+@@ -38,15 +47,15 @@ time:
+ 
+   target_frequency_hours: 6
+ 
+-  # Important:
+-  # Precipitation is handled as snapshots, not temporal accumulations.
+-  precipitation_time_handling: "snapshot"
++  # v0.2: precipitation enters as the 6-h accumulation that ends at the
++  # synoptic time T, P6 = (T-6h, T]. R24 = (T-24h, T] and the exclusive
++  # antecedent A72 = (T-78h, T-6h] only escalate H_P.
++  precipitation_time_handling: "accumulation"
++  precipitation_window: "(T-6h, T]"
+ 
+-  # Temporal alignment between cyclone time and precipitation snapshot
+-  temporal_alignment: "nearest"
+-
+-  # Maximum allowed difference between cyclone time and precipitation snapshot
+-  max_time_tolerance_hours: 1.5
++  # The accumulation window must end exactly at T (no nearest-time matching).
++  temporal_alignment: "window_end"
++  max_time_tolerance_hours: 0.0
+ 
+ 
+ # ============================================================
+@@ -60,8 +69,8 @@ precipitation:
+   # This can be changed depending on the dataset.
+   variable_name: "precipitation"
+ 
+-  # ITCHI v0.1 uses precipitation snapshots.
+-  temporal_support: "snapshot"
++  # v0.2: 6-h accumulation ending at T (see time.precipitation_window).
++  temporal_support: "accumulation_6h"
+ 
+   # Units must be checked for each dataset.
+   # For downscaled products, the field should be comparable with the climatology.
+@@ -90,7 +99,15 @@ precipitation:
+     climatology_6h: "data/processed/mswep_v3_6h_percentiles_may_nov.nc"
+     climatology_24h: "data/processed/mswep_v3_24h_percentiles_may_nov.nc"
+     climatology_72h: "data/processed/mswep_v3_72h_percentiles_may_nov.nc"
+-    climatology_variable: "p_wet"
++    # p_wet_raw: wet-window percentiles without the sufficiency filter; it is
++    # the variable used for every v0.2 result (notebooks 05-08,
++    # docs/verification_v02.md). p_wet is NaN where the effective sample is
++    # too small (e.g. 72-h P99).
++    climatology_variable: "p_wet_raw"
++    # H_P where P6 or a used 6-h percentile is NaN (e.g. outside MSWEP or a
++    # pixel without climatology): 0.0 = no precipitation hazard (as in
++    # notebooks 05-08); null keeps NaN.
++    nan_hazard_value: 0.0
+ 
+   epsilon: 1.0e-6
+ 
+@@ -137,6 +154,9 @@ geometry:
+   # Main version uses quadrant-specific radii.
+   use_quadrant_radii: true
+ 
++  # Filling of missing R34 quadrants (and of ROCLOUD with mode "never")
++  radius_fill_strategy: "mean_available"
++
+   # Expected quadrant order
+   quadrant_convention:
+     - "RNE"
+@@ -147,8 +167,12 @@ geometry:
+   # R34 defines the direct region.
+   direct_region_radius: "R34"
+ 
+-  # ROCLOUD defines the external attribution limit.
++  # ROCLOUD defines the external attribution limit, with R_W06 as a floor by
++  # quadrant (parametric_radii.attribution_radius_mode = "floor"):
++  # R_attr_q = R_W06_q where ROCLOUD_q is missing (or 0, no detection) or
++  # smaller than R_W06_q; otherwise ROCLOUD_q. Never below R_direct_q.
+   outer_attribution_radius: "ROCLOUD"
++  attribution_floor: "R_W06"
+ 
+ 
+ # ============================================================
+@@ -158,13 +182,21 @@ geometry:
+ wind:
+   enabled: true
+ 
+-  # v0.1: wind hazard only inside R34. v0.2: W06 tail down to the attribution radius.
++  # v0.1: wind hazard only inside R34. v0.2: W06 tail that ends at R_W06.
+   model: "w06_tail"                   # "v01" | "w06_tail" (pipeline wind_model)
+-  active_region: "inside_attribution" # v0.1: "inside_r34"
++  active_region: "inside_r_w06"       # v0.1: "inside_r34"
+ 
+   # v0.2 tail: H_W = h34 + (1 - h34)(V - 34)/(Vmax - 34) inside R_direct,
+-  # H_W = h34 (V - V_out)/(34 - V_out) outside, V_out = wind at the attribution radius.
++  # H_W = h34 (V - V_out)/(34 - V_out) outside, V_out = wind at R_W06_q.
++  # R_W06 bounds the wind only; the attribution radius (ROCLOUD with R_W06
++  # floor) bounds the indirect precipitation.
+   tail_h34: 0.2
++  tail_end_radius: "R_W06"
++
++  # Optional cut of the tail at a wind speed (kt), e.g. 17 (decision D1 in
++  # docs/verification_v02.md). null = tail ends at R_W06. The tail never
++  # extends beyond R_W06: V_out = max(V(R_W06_q), tail_end_wind_kt).
++  tail_end_wind_kt: null
+ 
+   # Tropical-storm-force wind threshold
+   reference_wind_kt: 34.0
+@@ -254,12 +286,28 @@ parametric_radii:
+   # Outer-size threshold in m s-1: 2.0 (PA21) or 2.572 (5 kt, Knaff et al. 2014)
+   outer_threshold_ms: 2.0
+ 
+-  # Role of the W06 outer radius as attribution radius:
+-  # "never" | "fallback" (only where ROCLOUD is missing) | "always"
+-  attribution_radius_mode: "fallback"
++  # Role of R_W06 in the attribution radius, by quadrant:
++  #   "never"    ROCLOUD only; missing quadrants filled with the mean of the
++  #              valid ones (v0.1 behaviour)
++  #   "fallback" R_W06 only where ROCLOUD is missing
++  #   "floor"    R_W06 where ROCLOUD is missing or smaller (v0.2 default)
++  #   "always"   R_W06 everywhere (setting of the v0.2 verification studies)
++  attribution_radius_mode: "floor"
+ 
+-  # Use W06 R34 as fallback_direct_radius_km when observed R34 is missing
++  # Use the parametric R34 (r_w06 settings below) as fallback_direct_radius_km
++  # when observed R34 is missing
+   use_as_direct_fallback: true
+ 
+   # Wind hazard profile: "rankine" (wind.py, v0.1) | "w06" (v0.2, with tail)
+-  wind_profile: "w06"
+\ No newline at end of file
++  wind_profile: "w06"
++
++  # Definition of R_W06 in compute_itchi_snapshot_v02: radius where the W06
++  # profile falls to outer_threshold_ms. PA21 configuration (empirical Rmax,
++  # no R34 calibration), as in the v0.2 verification (pa21_r2_km). The keys
++  # above (rmax_variant, use_observed_rmw, calibrate_to_r34) belong to the
++  # parametric radii of the v0.1 notebooks and are not used for R_W06.
++  r_w06:
++    rmax_variant: "pa21"
++    use_observed_rmw: false
++    calibrate_to_r34: false
++    outer_threshold_ms: 2.0
+\ No newline at end of file
+diff --git a/docs/api.md b/docs/api.md
+index dd92043..2328560 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -33,7 +33,8 @@ The recommended high-level entry points are:
+ 
+ | Level | Function | Module |
+ |---|---|---|
+-| Single snapshot | `compute_itchi_snapshot_from_grid` | `itchi.pipeline` |
++| Single snapshot, ITCHI v0.2 | `compute_itchi_snapshot_v02` | `itchi.pipeline` |
++| Single snapshot, v0.1 defaults | `compute_itchi_snapshot_from_grid` | `itchi.pipeline` |
+ | Event compilation | `compile_itchi_event` | `itchi.compiler` |
+ | Event products only | `compute_event_products` | `itchi.aggregation` |
+ | Save output | `write_result`, `write_dataset` | `itchi.io` |
+@@ -139,6 +140,43 @@ itchi = result["ITCHI"]
+ | `ROCLOUD_filled_quadrants` | ROCLOUD quadrants filled by imputation |
+ | `wind_hazard_source` | `provided` or `radial_profile` |
+ 
++### `compute_itchi_snapshot_v02`
++
++ITCHI v0.2 for one synoptic time. Keyword arguments after `a72` are
++keyword-only; their defaults equal `configs/default.yaml`
++(`itchi.config.itchi_v02_settings_from_config` builds them from a
++configuration).
++
++```python
++result = compute_itchi_snapshot_v02(
++    p6, r24, a72,
++    quantiles_6h=q6, quantiles_24h=q24, quantiles_72h=q72,
++    lon=lon, lat=lat, center_lon=-95.0, center_lat=20.0,
++    vmax_kt=95.0, rmw_km=30.0,
++    r34_by_quadrant={"RNE": 120, "RSE": 100, "RSW": 60, "RNW": 80},   # nm
++    rocloud_by_quadrant={"RNE": 650, "RSE": None, "RSW": 0, "RNW": 500},  # km
++)
++```
++
++| Input | Meaning |
++|---|---|
++| `p6`, `r24`, `a72` | Precipitation in (T-6h, T], (T-24h, T] and (T-78h, T-6h] |
++| `quantiles_6h/24h/72h` | Local percentiles {"Q75": ..., "Q90": ...}; `climatology.load_percentile_climatology` |
++| `rocloud_by_quadrant` | ROCLOUD (km); `None`, missing or 0 → R_W06 in that quadrant |
++| `r_w06_km` | Optional R_W06 (scalar or by quadrant); default PA21, V = 2 m/s |
++| `w06_attribution_mode` | `"floor"` (default), `"fallback"`, `"always"` (v0.2 studies), `"never"` (v0.1) |
++| `wind_tail_h34`, `wind_tail_end_kt` | Hazard at R34 (0.2) and optional cut of the tail (kt) |
++| `precip_matrix` | Matrix definition; default `PRECIP_MATRIX_V02` |
++| `precipitation_nan_value` | H_P where P6 or a 6-h percentile is NaN (0.0; `None` keeps NaN) |
++
++| Output | Meaning |
++|---|---|
++| `R_direct_q`, `R_attr_q`, `R_W06_q` | Per-cell direct, attribution and wind-tail radii (km) |
++| `H_P`, `H_P_missing` | Precipitation hazard and cells where it was NaN |
++| `H_W`, `H_Wdir`, `H_Wind`, `wind_kt` | Wind hazard (direct and indirect) and W06 wind |
++| `R_attr_status` | Rule by quadrant: `rocloud`, `w06_floor`, `w06_missing_rocloud`, `w06`, `rocloud_filled` |
++| `itchi_formulation` | `"v0.2"` |
++
+ ---
+ 
+ ## 3. Event-level API
+diff --git a/docs/dev_log.md b/docs/dev_log.md
+index 99ea791..ee0f4d4 100644
+--- a/docs/dev_log.md
++++ b/docs/dev_log.md
+@@ -89,3 +89,14 @@ pre-commit run --all-files
+   tiempo sinóptico; R24 y A72 solo escalan H_P.
+ - Pendiente para v0.3: decisiones D1–D9 de `docs/verification_v02.md`.
+ 
++
++## 2026-10-28 — Inicio de 0.2.1: consistencia y punto de entrada v0.2
++
++- `compute_itchi_snapshot_v02` (pipeline): P6, R24, A72 y climatologías de 6/24/72 h → ITCHI v0.2
++  en una sola llamada. Sus valores por defecto son los de `configs/default.yaml`; un test lo verifica.
++- Radio de atribución: ROCLOUD con piso R_W06 por cuadrante (faltante, 0 o menor → R_W06).
++  R_W06 queda solo como fin de la cola de viento.
++- Configuración: convención temporal v0.2 (acumulado de 6 h que termina en T), `p_wet_raw`,
++  modos de atribución documentados, bloque `r_w06` (PA21, 2 m/s).
++- Gancho para experimentos: `wind_tail_end_kt` (corte de la cola, D1).
++- Pendiente: correr `pytest` local y en CI; luego los experimentos de 0.2.1.
+diff --git a/src/itchi/climatology.py b/src/itchi/climatology.py
+index 1027702..f2866c2 100644
+--- a/src/itchi/climatology.py
++++ b/src/itchi/climatology.py
+@@ -243,3 +243,94 @@ def extract_standard_percentiles(
+         climatology[q95_name],
+         climatology[q99_name],
+     )
++
++
++# ============================================================
++# ITCHI v0.2: multi-duration MSWEP percentile files
++# ============================================================
++
++
++def quantile_dataarray_to_dict(
++    percentiles: xr.DataArray,
++    quantile_dim: str = "quantile",
++) -> dict[str, xr.DataArray]:
++    """
++    Split a percentile DataArray with a quantile dimension into named fields.
++
++    Quantile levels 0.75, 0.9, 0.999 become "Q75", "Q90", "Q99.9", the names
++    used by the v0.2 ramps and precipitation matrix.
++
++    Parameters
++    ----------
++    percentiles : xarray.DataArray
++        Percentile fields with a ``quantile_dim`` dimension of levels in (0, 1).
++    quantile_dim : str, default="quantile"
++        Name of the quantile dimension.
++
++    Returns
++    -------
++    dict[str, xarray.DataArray]
++        Percentile name -> field without the quantile dimension.
++    """
++    if quantile_dim not in percentiles.dims:
++        raise KeyError(f"Missing quantile dimension: {quantile_dim!r}")
++
++    levels = [float(v) for v in percentiles[quantile_dim].values]
++    validate_quantile_levels(levels)
++
++    return {
++        f"Q{round(level * 100.0, 4):g}": percentiles.isel({quantile_dim: i}, drop=True)
++        for i, level in enumerate(levels)
++    }
++
++
++def load_percentile_climatology(
++    path: str | Any,
++    variable: str = "p_wet_raw",
++    template: xr.DataArray | None = None,
++    tolerance_deg: float = 1.0e-3,
++    quantile_dim: str = "quantile",
++) -> dict[str, xr.DataArray]:
++    """
++    Read a percentile file written by scripts/percentiles_6h.py.
++
++    Files: data/processed/mswep_v3_{6,24,72}h_percentiles_may_nov.nc. The
++    72-h file is also the climatology of the exclusive antecedent A72,
++    because A72(T) = R72(T - 6 h).
++
++    Parameters
++    ----------
++    path : str or pathlib.Path
++        NetCDF file.
++    variable : str, default="p_wet_raw"
++        Percentile variable (configs/default.yaml,
++        precipitation.matrix_v02.climatology_variable).
++    template : xarray.DataArray or None, default=None
++        Precipitation field; if given, the percentiles are reindexed to its
++        lat/lon coordinates (nearest within tolerance_deg).
++    tolerance_deg : float, default=1e-3
++        Coordinate tolerance for the reindexing.
++    quantile_dim : str, default="quantile"
++        Name of the quantile dimension.
++
++    Returns
++    -------
++    dict[str, xarray.DataArray]
++        Percentile name ("Q75", "Q90", ...) -> field.
++    """
++    with xr.open_dataset(path) as ds:
++        if variable not in ds:
++            raise KeyError(f"Variable {variable!r} not found in {path}")
++        percentiles = ds[variable].load()
++
++    if template is not None:
++        spatial = {
++            dim: template[dim].values
++            for dim in template.dims
++            if dim in percentiles.dims and dim != quantile_dim and dim in template.coords
++        }
++        percentiles = percentiles.reindex(
++            spatial, method="nearest", tolerance=tolerance_deg
++        )
++
++    return quantile_dataarray_to_dict(percentiles, quantile_dim=quantile_dim)
+diff --git a/src/itchi/config.py b/src/itchi/config.py
+index fb2f58b..e288ca6 100644
+--- a/src/itchi/config.py
++++ b/src/itchi/config.py
+@@ -7,6 +7,7 @@ configuration files such as configs/default.yaml.
+ 
+ from __future__ import annotations
+ 
++from collections.abc import Mapping
+ from pathlib import Path
+ from typing import Any
+ 
+@@ -87,3 +88,71 @@ def load_default_config() -> dict[str, Any]:
+     config_path = project_root / "configs" / "default.yaml"
+ 
+     return load_config(config_path)
++
++
++def itchi_v02_settings_from_config(
++    config: Mapping[str, Any] | None = None,
++) -> dict[str, Any]:
++    """
++    Keyword arguments of ``pipeline.compute_itchi_snapshot_v02`` from a config.
++
++    Usage::
++
++        settings = itchi_v02_settings_from_config(load_default_config())
++        result = compute_itchi_snapshot_v02(..., **settings)
++
++    With configs/default.yaml the result equals the keyword defaults of
++    compute_itchi_snapshot_v02 (checked in tests/test_v02_snapshot.py), so an
++    experiment is defined by editing a copy of the YAML file.
++
++    Parameters
++    ----------
++    config : Mapping or None, default=None
++        Parsed configuration; None loads configs/default.yaml.
++
++    Returns
++    -------
++    dict[str, Any]
++        precip_matrix, wind_tail_h34, wind_tail_end_kt, w06_attribution_mode,
++        w06_direct_fallback, r_w06_kwargs, precipitation_nan_value,
++        radius_fill_strategy and the ITCHI weights.
++    """
++    cfg = load_default_config() if config is None else config
++
++    matrix_cfg = cfg["precipitation"]["matrix_v02"]
++    wind_cfg = cfg["wind"]
++    radii_cfg = cfg["parametric_radii"]
++    r_w06_cfg = radii_cfg["r_w06"]
++    weights = cfg["itchi"]
++
++    tail_end = wind_cfg.get("tail_end_wind_kt")
++    nan_value = matrix_cfg.get("nan_hazard_value", 0.0)
++
++    return {
++        "precip_matrix": {
++            "p6_nodes": tuple(str(v) for v in matrix_cfg["p6_nodes"]),
++            "base": tuple(float(v) for v in matrix_cfg["base"]),
++            "escalated": tuple(float(v) for v in matrix_cfg["escalated"]),
++            "escalation": {
++                str(name): tuple(str(v) for v in bounds)
++                for name, bounds in matrix_cfg["escalation"].items()
++            },
++            "combine": str(matrix_cfg.get("combine", "all")),
++        },
++        "wind_tail_h34": float(wind_cfg["tail_h34"]),
++        "wind_tail_end_kt": None if tail_end is None else float(tail_end),
++        "w06_attribution_mode": str(radii_cfg["attribution_radius_mode"]),
++        "w06_direct_fallback": bool(radii_cfg.get("use_as_direct_fallback", True)),
++        "r_w06_kwargs": {
++            "rmax_variant": str(r_w06_cfg["rmax_variant"]),
++            "use_observed_rmw": bool(r_w06_cfg["use_observed_rmw"]),
++            "calibrate_to_r34": bool(r_w06_cfg["calibrate_to_r34"]),
++            "outer_threshold_ms": float(r_w06_cfg["outer_threshold_ms"]),
++        },
++        "precipitation_nan_value": None if nan_value is None else float(nan_value),
++        "radius_fill_strategy": str(cfg.get("geometry", {}).get("radius_fill_strategy", "mean_available")),
++        "alpha_wind": float(weights["alpha_wind"]),
++        "beta_precip_direct": float(weights["beta_precip_direct"]),
++        "lambda_direct": float(weights["lambda_direct"]),
++        "mu_indirect": float(weights["mu_indirect"]),
++    }
+diff --git a/src/itchi/parametric_radii.py b/src/itchi/parametric_radii.py
+index 0346d8a..2040ef3 100644
+--- a/src/itchi/parametric_radii.py
++++ b/src/itchi/parametric_radii.py
+@@ -47,6 +47,17 @@ DEFAULT_THRESHOLDS_MS: dict[str, float] = {
+     "r34_km": V_R34_MS,
+ }
+ 
++# R_W06 used by ITCHI v0.2 (compute_itchi_snapshot_v02): W06 profile with the
++# PA21 configuration (empirical Rmax, no R34 calibration), radius where
++# V = 2 m s-1. Same as the "pa21_r2_km" radius of the v0.2 verification.
++# Mirrors parametric_radii.r_w06 in configs/default.yaml.
++R_W06_DEFAULTS: dict[str, Any] = {
++    "rmax_variant": "pa21",
++    "use_observed_rmw": False,
++    "calibrate_to_r34": False,
++    "outer_threshold_ms": V_OUTER_PA21_MS,
++}
++
+ 
+ def fit_x1_to_radius(
+     vmax_ms: np.ndarray,
+@@ -257,6 +268,71 @@ def parametric_direct_fallback_km(
+     return value if np.isfinite(value) else None
+ 
+ 
++def compute_w06_reference_radii(
++    vmax_kt: float,
++    lat: float,
++    rmw_km: float | None = None,
++    r34_mean_km: float | None = None,
++    rmax_variant: str = R_W06_DEFAULTS["rmax_variant"],
++    use_observed_rmw: bool = R_W06_DEFAULTS["use_observed_rmw"],
++    calibrate_to_r34: bool = R_W06_DEFAULTS["calibrate_to_r34"],
++    outer_threshold_ms: float = R_W06_DEFAULTS["outer_threshold_ms"],
++    **profile_kwargs: Any,
++) -> dict[str, float]:
++    """
++    Symmetric W06 reference radii (km) of one track record.
++
++    The defaults reproduce R_W06 of the v0.2 verification (PA21: empirical
++    Rmax, no R34 calibration, outer threshold 2 m s-1).
++
++    Parameters
++    ----------
++    vmax_kt, lat : float
++        Maximum sustained wind (kt) and center latitude (degrees).
++    rmw_km : float or None
++        Observed RMW (km); used only if use_observed_rmw.
++    r34_mean_km : float or None
++        Observed azimuthal-mean R34 (km); used only if calibrate_to_r34.
++    rmax_variant : {"w06", "pa21"}, default="pa21"
++        Empirical Rmax regression.
++    use_observed_rmw, calibrate_to_r34 : bool, default=False
++        Use the observed RMW / calibrate X1 to the observed mean R34.
++    outer_threshold_ms : float, default=2.0
++        Wind (m s-1) that defines the outer radius.
++    **profile_kwargs : Any
++        Passed to Willoughby2006Profile.
++
++    Returns
++    -------
++    dict[str, float]
++        "r_outer_km" (R_W06), "r34_km" (parametric R34), "rmax_km" and
++        "x1_km". NaN where a radius is undefined (e.g. r34_km for
++        vmax <= 34 kt).
++    """
++    rmw = None
++    if use_observed_rmw and rmw_km is not None and np.isfinite(float(rmw_km)):
++        rmw = np.atleast_1d(float(rmw_km))
++
++    r34 = None
++    if calibrate_to_r34 and r34_mean_km is not None and np.isfinite(float(r34_mean_km)):
++        r34 = np.atleast_1d(float(r34_mean_km))
++
++    radii = compute_parametric_radii(
++        vmax_kt=np.atleast_1d(float(vmax_kt)),
++        lat=np.atleast_1d(float(lat)),
++        rmw_km=rmw,
++        r34_obs_km=r34,
++        thresholds_ms={"r_outer_km": float(outer_threshold_ms), "r34_km": V_R34_MS},
++        rmax_variant=rmax_variant,
++        **profile_kwargs,
++    )
++
++    return {
++        key: float(np.asarray(radii[key], dtype=float).ravel()[0])
++        for key in ("r_outer_km", "r34_km", "rmax_km", "x1_km")
++    }
++
++
+ def compute_w06_wind_hazard(
+     radius_km: np.ndarray,
+     vmax_kt: float,
+@@ -302,6 +378,7 @@ def compute_w06_wind_hazard_with_tail(
+     x1_km: float | None = None,
+     h34: float = 0.2,
+     reference_wind_kt: float = TROPICAL_STORM_WIND_KT,
++    tail_end_wind_kt: float | None = None,
+     **profile_kwargs: Any,
+ ) -> dict[str, Any]:
+     """
+@@ -313,7 +390,10 @@ def compute_w06_wind_hazard_with_tail(
+     2. Quadrant asymmetry: the radius is scaled by s = R34_mean / R_direct_q,
+        so V = 34 kt at each quadrant's R_direct_q (only with a calibrated
+        profile; s = 1 otherwise).
+-    3. V_out = V(s * R_attr_q) is the wind at the attribution radius.
++    3. V_out = V(s * R_attr_q) is the wind at the tail-end radius R_attr_q
++       (R_W06_q in compute_itchi_snapshot_v02). With tail_end_wind_kt,
++       V_out = max(V(s * R_attr_q), tail_end_wind_kt): the tail is cut at
++       that wind speed and never extends beyond R_attr_q.
+     4. wind.normalize_wind_hazard_with_tail: inside R_direct_q,
+        H_W = h34 + (1 - h34)(V - 34)/(Vmax - 34); outside,
+        H_W = h34 (V - V_out)/(34 - V_out), zero at R_attr_q.
+@@ -337,6 +417,9 @@ def compute_w06_wind_hazard_with_tail(
+         Hazard at the 34-kt radius.
+     reference_wind_kt : float, default=34.0
+         Tropical-storm-force threshold.
++    tail_end_wind_kt : float or None, default=None
++        Optional wind speed (kt) at which the tail ends, e.g. 17 kt; must be
++        below reference_wind_kt. None keeps the tail down to R_attr_q.
+     **profile_kwargs : Any
+         Passed to Willoughby2006Profile (e.g. rmax_variant).
+ 
+@@ -346,6 +429,11 @@ def compute_w06_wind_hazard_with_tail(
+         "H_W" (hazard), "wind_kt" (W06 wind), "outer_wind_kt", "x1_km",
+         "x1_calibrated" and "radius_scale".
+     """
++    if tail_end_wind_kt is not None and not 0.0 <= float(tail_end_wind_kt) < reference_wind_kt:
++        raise ValueError(
++            f"tail_end_wind_kt must be in [0, {reference_wind_kt}). Received: {tail_end_wind_kt}"
++        )
++
+     template = radius_km if hasattr(radius_km, "dims") else None
+     r = np.asarray(radius_km, dtype=float)
+     r_dir = np.broadcast_to(np.asarray(direct_radius_km, dtype=float), r.shape)
+@@ -375,6 +463,8 @@ def compute_w06_wind_hazard_with_tail(
+ 
+     wind_kt = profile(r * scale) / KNOT_TO_MS
+     outer_kt = profile(r_att * scale) / KNOT_TO_MS
++    if tail_end_wind_kt is not None:
++        outer_kt = np.maximum(outer_kt, float(tail_end_wind_kt))
+     direct = r <= r_dir
+ 
+     hazard = normalize_wind_hazard_with_tail(
+diff --git a/src/itchi/pipeline.py b/src/itchi/pipeline.py
+index 6360716..bb86ef2 100644
+--- a/src/itchi/pipeline.py
++++ b/src/itchi/pipeline.py
+@@ -16,7 +16,15 @@ Two levels of calculation are provided:
+ The second function is closer to the expected operational use with real
+ tropical cyclone data.
+ 
+-ITCHI v0.2 options (defaults reproduce v0.1):
++3. compute_itchi_snapshot_v02
++   ITCHI v0.2 entry point: takes P6, R24, A72 and their percentile
++   climatologies, computes the precipitation matrix, the W06 wind with an
++   outer tail that ends at R_W06, and the attribution radius ROCLOUD with
++   R_W06 as a floor by quadrant. Its keyword defaults equal
++   configs/default.yaml (see config.itchi_v02_settings_from_config).
++
++ITCHI v0.2 options of compute_itchi_snapshot_from_grid (its defaults
++reproduce v0.1 and are kept for backward compatibility):
+ 
+ - ``precipitation_hazard``: precomputed H_P, e.g. the P6 x (R24, A72) matrix of
+   precipitation.compute_precipitation_matrix_hazard; q90/q95/q99 are then
+@@ -35,17 +43,30 @@ import numpy as np
+ import xarray as xr
+ 
+ from itchi.components import compute_hazard_components
+-from itchi.constants import ITCHI_VERSION
++from itchi.constants import ITCHI_VERSION, QUADRANTS
+ from itchi.geometry import (
+     assign_quadrant_radius,
+     build_geometry_fields,
+ )
+ from itchi.index import compute_itchi_from_components
+ from itchi.masks import build_region_masks
+-from itchi.parametric_radii import compute_w06_wind_hazard_with_tail
+-from itchi.precipitation import compute_precipitation_hazard
++from itchi.parametric_radii import (
++    R_W06_DEFAULTS,
++    compute_w06_reference_radii,
++    compute_w06_wind_hazard_with_tail,
++)
++from itchi.precipitation import (
++    PRECIP_MATRIX_V02,
++    compute_precipitation_hazard,
++    compute_precipitation_matrix_hazard,
++)
+ from itchi.quality_control import run_snapshot_quality_control
+-from itchi.radii import resolve_attribution_radius, resolve_direct_radius
++from itchi.radii import (
++    resolve_attribution_radius,
++    resolve_attribution_radius_with_w06,
++    resolve_direct_radius,
++    standardize_quadrant_radii,
++)
+ from itchi.units import convert_quadrant_radii_to_km
+ from itchi.wind import compute_wind_hazard_from_profile
+ 
+@@ -451,3 +472,352 @@ def compute_itchi_snapshot_from_grid(
+         run_snapshot_quality_control(full_result)
+ 
+     return full_result
++
++
++# ============================================================
++# ITCHI v0.2 entry point
++# ============================================================
++
++
++def _positive_or_none(value: float | None) -> float | None:
++    """
++    Float value if finite and > 0, otherwise None.
++    """
++    if value is None:
++        return None
++    value = float(value)
++    return value if np.isfinite(value) and value > 0.0 else None
++
++
++def _mean_positive(radii: Mapping[str, float]) -> float | None:
++    """
++    Mean of the finite, positive quadrant radii or None.
++    """
++    values = [_positive_or_none(v) for v in radii.values()]
++    values = [v for v in values if v is not None]
++    return float(np.mean(values)) if values else None
++
++
++def _missing(values: ArrayLike) -> ArrayLike:
++    """
++    Boolean field of non-finite values (NaN).
++    """
++    if isinstance(values, xr.DataArray):
++        return values.isnull()
++    return ~np.isfinite(np.asarray(values, dtype=float))
++
++
++def _fill_missing(values: ArrayLike, fill_value: float) -> ArrayLike:
++    """
++    Replace non-finite values by fill_value.
++    """
++    if isinstance(values, xr.DataArray):
++        return values.fillna(fill_value)
++    array = np.asarray(values, dtype=float)
++    return np.where(np.isfinite(array), array, fill_value)
++
++
++def compute_itchi_snapshot_v02(
++    p6: ArrayLike,
++    r24: ArrayLike,
++    a72: ArrayLike,
++    *,
++    quantiles_6h: Mapping[str, float | ArrayLike],
++    quantiles_24h: Mapping[str, float | ArrayLike],
++    quantiles_72h: Mapping[str, float | ArrayLike],
++    lon: ArrayLike,
++    lat: ArrayLike,
++    center_lon: float,
++    center_lat: float,
++    vmax_kt: float,
++    r34_by_quadrant: Mapping[str, float | int | None],
++    rocloud_by_quadrant: Mapping[str, float | int | None] | None = None,
++    rmw_km: float | None = None,
++    r_w06_km: float | Mapping[str, float] | None = None,
++    r34_unit: str = "nm",
++    rocloud_unit: str = "km",
++    fallback_direct_radius_km: float | None = None,
++    w06_direct_fallback: bool = True,
++    radius_fill_strategy: str = "mean_available",
++    w06_attribution_mode: str = "floor",
++    r_w06_kwargs: Mapping[str, Any] | None = None,
++    precip_matrix: Mapping[str, Any] | None = None,
++    precipitation_nan_value: float | None = 0.0,
++    wind_tail_h34: float = 0.2,
++    wind_tail_end_kt: float | None = None,
++    r34_mean_km: float | None = None,
++    w06_profile_kwargs: Mapping[str, Any] | None = None,
++    alpha_wind: float = 1.0,
++    beta_precip_direct: float = 1.0,
++    lambda_direct: float = 1.0,
++    mu_indirect: float = 1.0,
++    run_quality_control: bool = False,
++) -> dict[str, Any]:
++    """
++    Compute ITCHI v0.2 for one synoptic time on a lon/lat grid.
++
++    Steps
++    -----
++    1. Precipitation: H_P = P6 x (R24, A72) matrix against the local
++       percentiles of each duration (precipitation.
++       compute_precipitation_matrix_hazard). The 72-h climatology applies to
++       A72 because A72(T) = R72(T - 6 h).
++    2. Direct radius R_direct_q: observed R34 (missing quadrants filled);
++       without R34, RMW for depressions (observed, else the parametric Rmax)
++       or the parametric R34 (w06_direct_fallback).
++    3. R_W06: radius where the W06 profile falls to 2 m s-1 with the PA21
++       configuration (r_w06_kwargs), symmetric unless r_w06_km gives it by
++       quadrant; never below R_direct_q.
++    4. Attribution radius R_attr_q: ROCLOUD with R_W06 as floor
++       (w06_attribution_mode="floor"): R_W06_q where ROCLOUD_q is missing,
++       0 (no detection) or smaller than R_W06_q. Never below R_direct_q.
++    5. Wind: W06 calibrated to the observed mean R34, with
++       H_W = h34 + (1 - h34)(V - 34)/(Vmax - 34) inside R_direct_q and a tail
++       h34 (V - V_out)/(34 - V_out) that vanishes at R_W06_q (or where
++       V = wind_tail_end_kt). R_W06 bounds only the wind; the precipitation
++       of the indirect region extends to R_attr_q.
++    6. Masks, components and ITCHI as in compute_itchi_snapshot, with the
++       wind tail in the indirect component:
++       H_ind = 1 - (1 - H_Wind)(1 - H_Pind).
++
++    The keyword defaults equal configs/default.yaml; an experiment can pass
++    ``**itchi.config.itchi_v02_settings_from_config(cfg)`` built from a
++    modified copy of the YAML file.
++
++    Inputs must be all NumPy arrays or all xarray DataArrays on the same
++    grid (P6, R24, A72, percentile fields, lon, lat).
++
++    Parameters
++    ----------
++    p6, r24, a72 : numpy.ndarray or xarray.DataArray
++        P6 = precipitation in (T-6h, T]; R24 = (T-24h, T]; A72 = (T-78h,
++        T-6h] (precipitation.compute_antecedent_precipitation).
++    quantiles_6h, quantiles_24h, quantiles_72h : Mapping
++        Local percentiles by name ("Q75", "Q90", ...), e.g. from
++        climatology.load_percentile_climatology. 6 h needs the matrix
++        p6_nodes; 24 h and 72 h need the percentiles named in the matrix
++        escalation (R24: Q90, Q95; A72: Q75).
++    lon, lat : numpy.ndarray or xarray.DataArray
++        Grid coordinates in degrees, same shape as P6.
++    center_lon, center_lat : float
++        Cyclone center in degrees.
++    vmax_kt : float
++        Maximum sustained wind (kt).
++    r34_by_quadrant : Mapping
++        R34 by quadrant (RNE, RSE, RSW, RNW or NE, SE, SW, NW); may be
++        partially or totally missing.
++    rocloud_by_quadrant : Mapping or None, default=None
++        ROCLOUD by quadrant; None = no ROCLOUD record (R_attr_q = R_W06_q
++        except with mode "never").
++    rmw_km : float or None, default=None
++        Observed RMW (km); None or NaN uses the empirical regression.
++    r_w06_km : float, Mapping or None, default=None
++        R_W06 in km (scalar or by quadrant); None computes it.
++    r34_unit, rocloud_unit : str
++        Units of R34 (default "nm", IBTrACS) and ROCLOUD (default "km").
++    fallback_direct_radius_km : float or None, default=None
++        Explicit direct-radius fallback (km); takes priority over the
++        parametric R34.
++    w06_direct_fallback : bool, default=True
++        Use the parametric R34 as direct fallback when R34 is missing.
++    radius_fill_strategy : str, default="mean_available"
++        Filling of missing R34 quadrants (and ROCLOUD with mode "never").
++    w06_attribution_mode : {"floor", "fallback", "always", "never"}, default="floor"
++        Role of R_W06 in the attribution radius
++        (radii.resolve_attribution_radius_with_w06).
++    r_w06_kwargs : Mapping or None, default=None
++        Definition of R_W06 (parametric_radii.compute_w06_reference_radii);
++        None uses parametric_radii.R_W06_DEFAULTS (PA21, 2 m s-1).
++    precip_matrix : Mapping or None, default=None
++        Matrix definition; None uses precipitation.PRECIP_MATRIX_V02.
++    precipitation_nan_value : float or None, default=0.0
++        H_P where it is NaN (missing P6 or 6-h percentile); None keeps NaN.
++        The cells are reported in "H_P_missing".
++    wind_tail_h34 : float, default=0.2
++        Wind hazard at the 34-kt radius.
++    wind_tail_end_kt : float or None, default=None
++        Optional cut of the tail at a wind speed (kt, < 34); the tail never
++        extends beyond R_W06_q.
++    r34_mean_km : float or None, default=None
++        Observed mean R34 (km) to calibrate W06; None takes the mean of the
++        valid observed quadrants (no calibration if there are none).
++    w06_profile_kwargs : Mapping or None, default=None
++        Extra arguments for the wind profile (Willoughby2006Profile).
++    alpha_wind, beta_precip_direct, lambda_direct, mu_indirect : float
++        ITCHI weights (default 1.0).
++    run_quality_control : bool, default=False
++        Run the snapshot quality-control checks.
++
++    Returns
++    -------
++    dict[str, Any]
++        Fields: radius_km, quadrant, R_direct_q, R_attr_q, R_W06_q, M_direct,
++        M_indirect, M_exterior, H_P, H_P_missing, H_Pdir, H_Pind, H_W,
++        H_Wdir, H_Wind, H_dir, H_ind, ITCHI, wind_kt. Metadata: radii by
++        quadrant and their sources, attribution status by quadrant, W06
++        parameters, itchi_version and itchi_formulation = "v0.2".
++    """
++    vmax = _positive_or_none(vmax_kt)
++    if vmax is None:
++        raise ValueError(f"vmax_kt must be finite and > 0. Received: {vmax_kt}")
++
++    # 1. Precipitation matrix
++    matrix = PRECIP_MATRIX_V02 if precip_matrix is None else precip_matrix
++    hazard_precip = compute_precipitation_matrix_hazard(
++        precipitation=p6,
++        quantiles_6h=quantiles_6h,
++        escalation_values={"R24": r24, "A72": a72},
++        escalation_quantiles={"R24": quantiles_24h, "A72": quantiles_72h},
++        matrix=matrix,
++    )
++    precip_missing = _missing(hazard_precip)
++    if precipitation_nan_value is not None:
++        hazard_precip = _fill_missing(hazard_precip, float(precipitation_nan_value))
++
++    # 2. Direct radius and W06 reference radii
++    rmw_observed = _positive_or_none(rmw_km)
++    r34_km = convert_quadrant_radii_to_km(radii_by_quadrant=r34_by_quadrant, input_unit=r34_unit)
++    if r34_mean_km is None:
++        r34_mean_km = _mean_positive(r34_km)
++
++    w06_settings = {**R_W06_DEFAULTS, **dict(r_w06_kwargs or {})}
++    reference = compute_w06_reference_radii(
++        vmax_kt=vmax,
++        lat=float(center_lat),
++        rmw_km=rmw_observed,
++        r34_mean_km=r34_mean_km,
++        **w06_settings,
++    )
++
++    fallback = fallback_direct_radius_km
++    if fallback is None and w06_direct_fallback and np.isfinite(reference["r34_km"]):
++        fallback = reference["r34_km"]
++
++    rmw_for_direct = rmw_observed
++    if rmw_for_direct is None and np.isfinite(reference["rmax_km"]):
++        rmw_for_direct = reference["rmax_km"]
++
++    resolved_direct = resolve_direct_radius(
++        r34_by_quadrant=r34_km,
++        vmax_kt=vmax,
++        rmw_km=rmw_for_direct,
++        fallback_radius_km=fallback,
++        fill_strategy=radius_fill_strategy,
++    )
++    direct_radii = resolved_direct.radii
++
++    # 3. R_W06 by quadrant, never below R_direct_q
++    if r_w06_km is None:
++        if not np.isfinite(reference["r_outer_km"]):
++            raise ValueError("R_W06 is undefined for this record (check vmax_kt and the threshold).")
++        r_w06_raw = {q: reference["r_outer_km"] for q in QUADRANTS}
++        r_w06_source = "w06_parametric"
++    else:
++        if isinstance(r_w06_km, Mapping):
++            r_w06_raw = standardize_quadrant_radii(dict(r_w06_km))
++        else:
++            r_w06_raw = {q: float(r_w06_km) for q in QUADRANTS}
++        r_w06_source = "provided"
++
++    invalid = [q for q in QUADRANTS if _positive_or_none(r_w06_raw[q]) is None]
++    if invalid:
++        raise ValueError(f"R_W06 must be finite and > 0 in quadrant(s): {', '.join(invalid)}")
++
++    r_w06 = {q: max(float(r_w06_raw[q]), float(direct_radii[q])) for q in QUADRANTS}
++    r_w06_clipped = tuple(q for q in QUADRANTS if float(r_w06_raw[q]) < float(direct_radii[q]))
++
++    # 4. Attribution radius: ROCLOUD with R_W06 floor
++    rocloud_km = None
++    if rocloud_by_quadrant is not None:
++        rocloud_km = convert_quadrant_radii_to_km(
++            radii_by_quadrant=rocloud_by_quadrant,
++            input_unit=rocloud_unit,
++        )
++
++    attribution = resolve_attribution_radius_with_w06(
++        rocloud_by_quadrant=rocloud_km,
++        r_w06_by_quadrant=r_w06,
++        direct_by_quadrant=direct_radii,
++        mode=w06_attribution_mode,
++        fill_strategy=radius_fill_strategy,
++    )
++
++    # Geometry and per-cell radii
++    geometry = build_geometry_fields(lon=lon, lat=lat, center_lon=center_lon, center_lat=center_lat)
++    radius_km = geometry["radius_km"]
++    quadrant = geometry["quadrant"]
++
++    direct_q = assign_quadrant_radius(quadrant=quadrant, radii_by_quadrant=direct_radii)
++    attribution_q = assign_quadrant_radius(quadrant=quadrant, radii_by_quadrant=attribution.radii)
++    r_w06_q = assign_quadrant_radius(quadrant=quadrant, radii_by_quadrant=r_w06)
++
++    # 5. W06 wind with a tail that ends at R_W06
++    wind = compute_w06_wind_hazard_with_tail(
++        radius_km=radius_km,
++        direct_radius_km=direct_q,
++        attribution_radius_km=r_w06_q,
++        vmax_kt=vmax,
++        lat=float(center_lat),
++        rmw_km=rmw_observed,
++        r34_mean_km=r34_mean_km,
++        h34=wind_tail_h34,
++        tail_end_wind_kt=wind_tail_end_kt,
++        **dict(w06_profile_kwargs or {}),
++    )
++
++    # 6. Masks, components and ITCHI
++    core = compute_itchi_snapshot(
++        precipitation=p6,
++        q90=None,
++        q95=None,
++        q99=None,
++        radius_km=radius_km,
++        r34_km=direct_q,
++        rocloud_km=attribution_q,
++        wind_hazard_normalized=wind["H_W"],
++        alpha_wind=alpha_wind,
++        beta_precip_direct=beta_precip_direct,
++        lambda_direct=lambda_direct,
++        mu_indirect=mu_indirect,
++        run_quality_control=False,
++        precipitation_hazard=hazard_precip,
++        wind_hazard_indirect=wind["H_W"],
++    )
++
++    result: dict[str, Any] = {
++        "radius_km": radius_km,
++        "quadrant": quadrant,
++        "R_direct_q": direct_q,
++        "R_attr_q": attribution_q,
++        "R_W06_q": r_w06_q,
++        **core,
++        "H_P_missing": precip_missing,
++        "wind_kt": wind["wind_kt"],
++        # radii metadata (km, by quadrant)
++        "R_direct_by_quadrant": dict(direct_radii),
++        "R_direct_source": resolved_direct.source,
++        "R_direct_filled_quadrants": resolved_direct.filled_quadrants,
++        "R_direct_used_fallback": resolved_direct.used_fallback,
++        "R_W06_by_quadrant": r_w06,
++        "R_W06_source": r_w06_source,
++        "R_W06_clipped_to_direct": r_w06_clipped,
++        "R_attr_by_quadrant": attribution.radii,
++        "R_attr_status": attribution.status,
++        "R_attr_clipped_to_direct": attribution.clipped_to_direct,
++        "w06_attribution_mode": attribution.mode,
++        # wind and precipitation metadata
++        "wind_hazard_source": "w06_tail",
++        "w06_x1_km": wind["x1_km"],
++        "w06_x1_calibrated": wind["x1_calibrated"],
++        "wind_tail_h34": float(wind_tail_h34),
++        "wind_tail_end_kt": wind_tail_end_kt,
++        "precipitation_hazard_source": "matrix_v02",
++        "itchi_version": ITCHI_VERSION,
++        "itchi_formulation": "v0.2",
++    }
++
++    if run_quality_control:
++        # run_snapshot_quality_control checks R_direct_q <= ROCLOUD_q
++        run_snapshot_quality_control({**result, "ROCLOUD_q": attribution_q})
++
++    return result
+diff --git a/src/itchi/radii.py b/src/itchi/radii.py
+index 832ade3..aa0b52f 100644
+--- a/src/itchi/radii.py
++++ b/src/itchi/radii.py
+@@ -335,3 +335,149 @@ def resolve_attribution_radius(
+         radii_by_quadrant=rocloud_by_quadrant,
+         strategy=fill_strategy,
+     )
++
++
++# ============================================================
++# ITCHI v0.2: attribution radius with the W06 outer radius
++# ============================================================
++
++W06_ATTRIBUTION_MODES: tuple[str, ...] = ("never", "fallback", "floor", "always")
++
++
++@dataclass(frozen=True)
++class AttributionRadii:
++    """
++    Attribution radius by quadrant and how each quadrant was resolved.
++
++    Attributes
++    ----------
++    radii : dict[str, float]
++        Final attribution radius R_attr_q (km), keys RNE, RSE, RSW, RNW.
++    status : dict[str, str]
++        Rule applied in each quadrant: "rocloud", "rocloud_filled" (mean of the
++        valid ROCLOUD quadrants), "w06_missing_rocloud", "w06_floor" or "w06".
++    clipped_to_direct : tuple[str, ...]
++        Quadrants raised to R_direct_q because the resolved radius was smaller.
++    mode : str
++        W06 attribution mode used.
++    """
++
++    radii: dict[str, float]
++    status: dict[str, str]
++    clipped_to_direct: tuple[str, ...]
++    mode: str
++
++
++def _rocloud_value(value: Any) -> float:
++    """
++    ROCLOUD radius in km or NaN; 0 and negative values mean no detection.
++    """
++    value = _clean_radius_value(value)
++    return value if np.isfinite(value) and value > 0.0 else np.nan
++
++
++def resolve_attribution_radius_with_w06(
++    rocloud_by_quadrant: dict[str, Any] | None,
++    r_w06_by_quadrant: dict[str, Any],
++    direct_by_quadrant: dict[str, Any] | None = None,
++    mode: str = "floor",
++    fill_strategy: str = "mean_available",
++) -> AttributionRadii:
++    """
++    Resolve the attribution radius R_attr_q from ROCLOUD and the W06 outer radius.
++
++    Rules by quadrant (ROCLOUD <= 0 or missing = no detection):
++
++    - "never":    ROCLOUD_q; missing quadrants filled with the mean of the
++                  valid ones (v0.1, ``resolve_attribution_radius``).
++    - "fallback": R_W06_q where ROCLOUD_q is missing, otherwise ROCLOUD_q.
++    - "floor":    R_W06_q where ROCLOUD_q is missing or smaller than R_W06_q,
++                  otherwise ROCLOUD_q (ITCHI v0.2 default).
++    - "always":   R_W06_q.
++
++    In every mode the result is raised to R_direct_q where it is smaller, so
++    that R_direct_q <= R_attr_q.
++
++    Parameters
++    ----------
++    rocloud_by_quadrant : dict[str, Any] or None
++        ROCLOUD radii by quadrant in km; None means no ROCLOUD record.
++    r_w06_by_quadrant : dict[str, Any]
++        W06 outer radius by quadrant in km (all quadrants finite and > 0
++        unless mode == "never").
++    direct_by_quadrant : dict[str, Any] or None, default=None
++        R_direct_q in km; None skips the lower bound.
++    mode : {"never", "fallback", "floor", "always"}, default="floor"
++        Role of R_W06.
++    fill_strategy : str, default="mean_available"
++        Filling strategy for mode="never".
++
++    Returns
++    -------
++    AttributionRadii
++        Final radii, status by quadrant and clipped quadrants.
++
++    Raises
++    ------
++    ValueError
++        If the mode is unknown, R_W06 is invalid where it is needed, or
++        mode="never" has no valid ROCLOUD quadrant.
++    """
++    if mode not in W06_ATTRIBUTION_MODES:
++        raise ValueError(f"Unsupported W06 attribution mode: {mode!r}")
++
++    if rocloud_by_quadrant is None:
++        rocloud = {q: np.nan for q in QUADRANTS}
++    else:
++        rocloud = {
++            q: _rocloud_value(v)
++            for q, v in standardize_quadrant_radii(rocloud_by_quadrant).items()
++        }
++
++    radii: dict[str, float] = {}
++    status: dict[str, str] = {}
++
++    if mode == "never":
++        valid = {q: v for q, v in rocloud.items() if np.isfinite(v)}
++        if not valid:
++            raise ValueError("mode='never' requires at least one valid ROCLOUD quadrant.")
++        filled = fill_missing_quadrant_radii(
++            {q: (v if np.isfinite(v) else None) for q, v in rocloud.items()},
++            strategy=fill_strategy,
++        )
++        radii = dict(filled.radii)
++        status = {
++            q: ("rocloud_filled" if q in filled.filled_quadrants else "rocloud")
++            for q in QUADRANTS
++        }
++    else:
++        r_w06 = standardize_quadrant_radii(r_w06_by_quadrant)
++        bad = [q for q in QUADRANTS if not (np.isfinite(r_w06[q]) and r_w06[q] > 0.0)]
++        if bad:
++            raise ValueError(f"R_W06 must be finite and > 0 in quadrant(s): {', '.join(bad)}")
++
++        for q in QUADRANTS:
++            roc, w06 = rocloud[q], float(r_w06[q])
++            if mode == "always":
++                radii[q], status[q] = w06, "w06"
++            elif not np.isfinite(roc):
++                radii[q], status[q] = w06, "w06_missing_rocloud"
++            elif mode == "floor" and roc < w06:
++                radii[q], status[q] = w06, "w06_floor"
++            else:
++                radii[q], status[q] = float(roc), "rocloud"
++
++    clipped: list[str] = []
++    if direct_by_quadrant is not None:
++        direct = standardize_quadrant_radii(direct_by_quadrant)
++        for q in QUADRANTS:
++            if np.isfinite(direct[q]) and radii[q] < direct[q]:
++                radii[q] = float(direct[q])
++                clipped.append(q)
++
++    return AttributionRadii(
++        radii={q: float(radii[q]) for q in QUADRANTS},
++        status=status,
++        clipped_to_direct=tuple(clipped),
++        mode=mode,
++    )
+diff --git a/tests/test_v02_snapshot.py b/tests/test_v02_snapshot.py
+new file mode 100644
+index 0000000..4dd3830
+--- /dev/null
++++ b/tests/test_v02_snapshot.py
+@@ -0,0 +1,261 @@
++"""
++Tests for the ITCHI v0.2 entry point (pipeline.compute_itchi_snapshot_v02),
++the attribution radius ROCLOUD with R_W06 floor, the R_W06 definition, the
++optional cut of the wind tail and the consistency between configs/default.yaml
++and the v0.2 defaults.
++"""
++
++from __future__ import annotations
++
++import inspect
++
++import numpy as np
++import pytest
++import xarray as xr
++
++from itchi.climatology import quantile_dataarray_to_dict
++from itchi.config import itchi_v02_settings_from_config, load_default_config
++from itchi.parametric_radii import (
++    R_W06_DEFAULTS,
++    compute_parametric_radii,
++    compute_w06_reference_radii,
++    compute_w06_wind_hazard_with_tail,
++)
++from itchi.pipeline import compute_itchi_snapshot_from_grid, compute_itchi_snapshot_v02
++from itchi.precipitation import PRECIP_MATRIX_V02, compute_precipitation_matrix_hazard
++from itchi.radii import resolve_attribution_radius_with_w06
++
++QUADS = ("RNE", "RSE", "RSW", "RNW")
++Q6 = {"Q75": 8.0, "Q90": 18.0, "Q95": 28.0, "Q99": 50.0}
++Q24 = {"Q90": 40.0, "Q95": 55.0}
++Q72 = {"Q75": 30.0, "Q90": 60.0, "Q95": 80.0}
++
++CASE = dict(
++    center_lon=-95.0, center_lat=20.0, vmax_kt=95.0, rmw_km=30.0,
++    r34_by_quadrant={"RNE": 120, "RSE": 100, "RSW": 60, "RNW": 80}, r34_unit="nm",
++)
++
++
++def _grid() -> tuple[np.ndarray, np.ndarray]:
++    # +-15 degrees around the center: contains R_W06 in every quadrant
++    return np.meshgrid(np.arange(-110.0, -80.0, 0.2), np.arange(5.0, 35.0, 0.2))
++
++
++def _fields(shape: tuple[int, ...], seed: int = 0) -> tuple[np.ndarray, ...]:
++    rng = np.random.default_rng(seed)
++    p6 = rng.gamma(0.7, 12.0, shape)
++    r24 = p6 + rng.gamma(0.7, 25.0, shape)
++    a72 = rng.gamma(0.8, 30.0, shape)
++    return p6, r24, a72
++
++
++def _v02(p6, r24, a72, lon, lat, **kw) -> dict:
++    return compute_itchi_snapshot_v02(
++        p6, r24, a72, quantiles_6h=Q6, quantiles_24h=Q24, quantiles_72h=Q72,
++        lon=lon, lat=lat, **{**CASE, **kw},
++    )
++
++
++def _r_w06() -> float:
++    return compute_w06_reference_radii(CASE["vmax_kt"], CASE["center_lat"])["r_outer_km"]
++
++
++# ------------------------------------------------------------------ radio de atribución
++
++W06 = {q: 700.0 for q in QUADS}
++DIRECT = {"RNE": 200.0, "RSE": 180.0, "RSW": 120.0, "RNW": 150.0}
++
++
++def test_attribution_floor_by_quadrant() -> None:
++    out = resolve_attribution_radius_with_w06(
++        {"RNE": 800.0, "RSE": None, "RSW": 300.0, "RNW": 0.0}, W06, DIRECT
++    )
++    assert out.radii == {"RNE": 800.0, "RSE": 700.0, "RSW": 700.0, "RNW": 700.0}
++    assert out.status == {
++        "RNE": "rocloud", "RSE": "w06_missing_rocloud",
++        "RSW": "w06_floor", "RNW": "w06_missing_rocloud",   # 0 = no detection
++    }
++    assert out.clipped_to_direct == () and out.mode == "floor"
++
++
++def test_attribution_other_modes() -> None:
++    roc = {"RNE": 800.0, "RSE": None, "RSW": 300.0, "RNW": 500.0}
++    fallback = resolve_attribution_radius_with_w06(roc, W06, mode="fallback")
++    assert fallback.radii == {"RNE": 800.0, "RSE": 700.0, "RSW": 300.0, "RNW": 500.0}
++    always = resolve_attribution_radius_with_w06(roc, W06, mode="always")
++    assert set(always.radii.values()) == {700.0}
++    never = resolve_attribution_radius_with_w06(roc, W06, mode="never")
++    assert never.radii["RSE"] == pytest.approx((800.0 + 300.0 + 500.0) / 3.0)
++    assert never.status["RSE"] == "rocloud_filled"
++    with pytest.raises(ValueError):
++        resolve_attribution_radius_with_w06(None, W06, mode="never")
++    with pytest.raises(ValueError):
++        resolve_attribution_radius_with_w06(roc, W06, mode="unknown")
++    with pytest.raises(ValueError):
++        resolve_attribution_radius_with_w06(roc, {**W06, "RNE": np.nan})
++
++
++def test_attribution_never_below_direct() -> None:
++    out = resolve_attribution_radius_with_w06(None, {q: 100.0 for q in QUADS}, DIRECT)
++    assert out.radii == DIRECT
++    assert set(out.clipped_to_direct) == set(QUADS)
++
++
++# ------------------------------------------------------------------ R_W06 y cola de viento
++
++
++def test_r_w06_reference_is_pa21_outer_radius() -> None:
++    ref = compute_w06_reference_radii(90.0, 20.0, rmw_km=30.0, r34_mean_km=200.0)
++    pa21 = compute_parametric_radii(np.array([90.0]), np.array([20.0]), rmax_variant="pa21")
++    assert ref["r_outer_km"] == pytest.approx(float(pa21["r_outer_km"][0]))
++    assert ref["r34_km"] == pytest.approx(float(pa21["r34_km"][0]))
++    assert ref["r_outer_km"] > ref["r34_km"] > ref["rmax_km"] > 0.0
++
++
++def test_w06_tail_cut_at_wind_speed() -> None:
++    r = np.linspace(0.0, 900.0, 9001)
++    kw = dict(vmax_kt=90.0, lat=20.0, r34_mean_km=200.0, h34=0.2)
++    full = compute_w06_wind_hazard_with_tail(r, 200.0, 800.0, **kw)
++    cut = compute_w06_wind_hazard_with_tail(r, 200.0, 800.0, tail_end_wind_kt=17.0, **kw)
++    outside = r > 200.0
++    assert (cut["H_W"][outside & (cut["wind_kt"] <= 17.0)] < 1e-12).all()
++    np.testing.assert_allclose(cut["H_W"][~outside], full["H_W"][~outside])
++    assert (cut["H_W"] <= full["H_W"] + 1e-12).all()
++    with pytest.raises(ValueError):
++        compute_w06_wind_hazard_with_tail(r, 200.0, 800.0, tail_end_wind_kt=40.0, **kw)
++
++
++# ------------------------------------------------------------------ compute_itchi_snapshot_v02
++
++
++def test_v02_reproduces_the_v02_study_setting() -> None:
++    # ROCLOUD smaller than R_W06 in every quadrant -> R_attr = R_W06 = end of
++    # the wind tail, the setting of notebooks 05-08 (attribution = R_W06)
++    lon, lat = _grid()
++    p6, r24, a72 = _fields(lon.shape)
++    r_w06 = _r_w06()
++    res = _v02(p6, r24, a72, lon, lat, rocloud_by_quadrant={q: 100.0 for q in QUADS},
++               run_quality_control=True)
++    assert set(res["R_attr_status"].values()) == {"w06_floor"}
++    assert res["R_attr_by_quadrant"] == pytest.approx({q: r_w06 for q in QUADS})
++
++    hp = compute_precipitation_matrix_hazard(
++        p6, Q6, {"R24": r24, "A72": a72}, {"R24": Q24, "A72": Q72}
++    )
++    ref = compute_itchi_snapshot_from_grid(
++        p6, None, None, None, lon=lon, lat=lat,
++        rocloud_by_quadrant={q: r_w06 for q in QUADS}, rocloud_unit="km",
++        precipitation_hazard=hp, wind_model="w06_tail", **CASE,
++    )
++    for key in ("M_direct", "M_indirect", "M_exterior"):
++        np.testing.assert_array_equal(res[key], ref[key])
++    for key in ("H_P", "H_W", "H_Wind", "H_dir", "H_ind", "ITCHI"):
++        np.testing.assert_allclose(res[key], ref[key], atol=1e-12)
++    assert res["itchi_formulation"] == "v0.2"
++
++
++def test_v02_wind_ends_at_r_w06_and_rain_extends_to_rocloud() -> None:
++    lon, lat = _grid()
++    p6, r24, a72 = _fields(lon.shape)
++    r_w06 = _r_w06()
++    roc = {"RNE": r_w06 + 200.0, "RSE": None, "RSW": 0.0, "RNW": r_w06 - 100.0}
++    res = _v02(p6, r24, a72, lon, lat, rocloud_by_quadrant=roc, run_quality_control=True)
++
++    assert res["R_attr_status"] == {
++        "RNE": "rocloud", "RSE": "w06_missing_rocloud",
++        "RSW": "w06_missing_rocloud", "RNW": "w06_floor",
++    }
++    assert res["R_attr_by_quadrant"]["RNE"] == pytest.approx(r_w06 + 200.0)
++
++    beyond = res["radius_km"] >= res["R_W06_q"]
++    assert (res["H_W"][beyond] < 1e-12).all()
++    band = res["M_indirect"] & beyond          # indirect region beyond R_W06 (RNE)
++    assert band.any()
++    np.testing.assert_allclose(res["H_ind"][band], res["H_Pind"][band])
++    assert (res["ITCHI"][res["M_exterior"]] == 0.0).all()
++
++
++def test_v02_without_rocloud_uses_r_w06() -> None:
++    lon, lat = _grid()
++    p6, r24, a72 = _fields(lon.shape)
++    res = _v02(p6, r24, a72, lon, lat)
++    assert set(res["R_attr_status"].values()) == {"w06_missing_rocloud"}
++    assert res["R_attr_by_quadrant"] == pytest.approx(res["R_W06_by_quadrant"])
++
++
++def test_v02_missing_precipitation() -> None:
++    lon, lat = _grid()
++    p6, r24, a72 = _fields(lon.shape)
++    p6[:5, :5] = np.nan
++    res = _v02(p6, r24, a72, lon, lat)
++    assert res["H_P_missing"][:5, :5].all() and not res["H_P_missing"][5:, 5:].any()
++    assert (res["H_P"][:5, :5] == 0.0).all()
++    kept = _v02(p6, r24, a72, lon, lat, precipitation_nan_value=None)
++    assert np.isnan(kept["H_P"][:5, :5]).all()
++
++
++def test_v02_tropical_depression_without_r34() -> None:
++    lon, lat = _grid()
++    p6, r24, a72 = _fields(lon.shape)
++    res = _v02(p6, r24, a72, lon, lat, vmax_kt=30.0, rmw_km=None,
++               r34_by_quadrant={q: None for q in QUADS})
++    assert res["R_direct_source"] == "RMW_fallback_for_tropical_depression"
++    assert 0.0 < float(np.max(res["H_W"])) < 0.2
++
++
++def test_v02_xarray_matches_numpy() -> None:
++    lon, lat = _grid()
++    p6, r24, a72 = _fields(lon.shape)
++    coords = {"lat": lat[:, 0], "lon": lon[0, :]}
++
++    def da(values: np.ndarray) -> xr.DataArray:
++        return xr.DataArray(values, dims=("lat", "lon"), coords=coords)
++
++    roc = {"RNE": 900.0, "RSE": None, "RSW": 300.0, "RNW": 0.0}
++    ref = _v02(p6, r24, a72, lon, lat, rocloud_by_quadrant=roc)
++    res = _v02(da(p6), da(r24), da(a72), da(lon), da(lat), rocloud_by_quadrant=roc)
++    for key in ("ITCHI", "H_P", "H_W", "H_ind", "R_attr_q", "R_W06_q"):
++        assert isinstance(res[key], xr.DataArray)
++        assert res[key].dims == ("lat", "lon")
++        np.testing.assert_allclose(res[key].values, ref[key], atol=1e-9)
++
++
++def test_v02_rejects_invalid_vmax() -> None:
++    lon, lat = _grid()
++    p6, r24, a72 = _fields(lon.shape)
++    with pytest.raises(ValueError):
++        _v02(p6, r24, a72, lon, lat, vmax_kt=np.nan)
++
++
++# ------------------------------------------------------------------ configuración
++
++
++def test_default_config_equals_v02_defaults() -> None:
++    settings = itchi_v02_settings_from_config(load_default_config())
++    params = inspect.signature(compute_itchi_snapshot_v02).parameters
++    resolved = {"precip_matrix": PRECIP_MATRIX_V02, "r_w06_kwargs": R_W06_DEFAULTS}
++    for key, value in settings.items():
++        default = params[key].default
++        if default is None and key in resolved:
++            default = resolved[key]
++        assert value == default, key
++
++
++def test_v02_settings_can_be_passed_as_kwargs() -> None:
++    lon, lat = _grid()
++    p6, r24, a72 = _fields(lon.shape)
++    settings = itchi_v02_settings_from_config(load_default_config())
++    np.testing.assert_allclose(
++        _v02(p6, r24, a72, lon, lat, **settings)["ITCHI"],
++        _v02(p6, r24, a72, lon, lat)["ITCHI"],
++    )
++
++
++def test_quantile_names_from_percentile_file() -> None:
++    da = xr.DataArray(
++        np.arange(8.0).reshape(4, 2), dims=("quantile", "x"),
++        coords={"quantile": [0.75, 0.9, 0.99, 0.999]},
++    )
++    out = quantile_dataarray_to_dict(da)
++    assert list(out) == ["Q75", "Q90", "Q99", "Q99.9"]
++    np.testing.assert_allclose(out["Q99.9"].values, [6.0, 7.0])

@@ -7,6 +7,65 @@ and this project uses semantic versioning principles while the API is under acti
 
 ---
 
+## [Unreleased] - 0.2.1
+
+Consistency fixes and a single v0.2 entry point, as the base for the 0.2.1
+experiments. The v0.2 formulation (matrix, W06 tail, h34) is unchanged; the
+attribution radius changes from R_W06 (verification studies) to ROCLOUD with
+an R_W06 floor.
+
+### Added
+
+- `pipeline.compute_itchi_snapshot_v02`: ITCHI v0.2 from P6, R24, A72 and
+  their 6/24/72-h percentile climatologies. Computes the precipitation
+  matrix, the direct radius (observed R34; RMW or parametric R34 as
+  fallback), R_W06, the attribution radius and the W06 wind with a tail that
+  ends at R_W06. Reports `H_P_missing`, radii and status by quadrant,
+  `itchi_formulation = "v0.2"`. Keyword defaults equal `configs/default.yaml`.
+- `radii.resolve_attribution_radius_with_w06` and `AttributionRadii`: role
+  of R_W06 in the attribution radius by quadrant, modes `"never"`,
+  `"fallback"`, `"floor"` (default) and `"always"`; ROCLOUD <= 0 counts as
+  no detection; never below R_direct_q.
+- `parametric_radii.compute_w06_reference_radii` and `R_W06_DEFAULTS`:
+  R_W06 (V = 2 m/s, PA21 configuration), parametric R34 and Rmax of one
+  record; same as `pa21_r2_km` of the v0.2 verification.
+- `parametric_radii.compute_w06_wind_hazard_with_tail(tail_end_wind_kt=...)`:
+  optional cut of the tail at a wind speed (decision D1); the tail never
+  extends beyond the tail-end radius. Default unchanged.
+- `config.itchi_v02_settings_from_config`: keyword arguments of the v0.2
+  entry point from a configuration.
+- `climatology.load_percentile_climatology` and
+  `climatology.quantile_dataarray_to_dict`: read the
+  `mswep_v3_{6,24,72}h_percentiles_may_nov.nc` files as {"Q75": ..., ...}.
+- `tests/test_v02_snapshot.py`, including a test that the defaults of the
+  v0.2 entry point equal `configs/default.yaml` and a test that the entry
+  point reproduces the setting of the v0.2 studies.
+
+### Changed
+
+- `configs/default.yaml`: header states which function uses it;
+  precipitation as a 6-h accumulation ending at T (`precipitation_window`,
+  `temporal_alignment: "window_end"`, tolerance 0 h) instead of the v0.1
+  snapshot fields; `climatology_variable: "p_wet_raw"` (the variable of all
+  v0.2 results); `geometry.attribution_floor: "R_W06"`;
+  `parametric_radii.attribution_radius_mode: "floor"` with the documented
+  modes; new `parametric_radii.r_w06`, `wind.tail_end_radius`,
+  `wind.tail_end_wind_kt`, `precipitation.matrix_v02.nan_hazard_value` and
+  `geometry.radius_fill_strategy`.
+- README: v0.2 entry point and attribution rule; `compute_itchi_snapshot_from_grid`
+  documented as keeping the v0.1 defaults.
+- CHANGELOG: "Planned" section updated to the current state.
+
+### Fixed
+
+- The configuration declared `matrix_v02` and `w06_tail` as defaults while
+  the pipeline defaulted to v0.1 and did not read it; v0.2 now has its own
+  entry point whose defaults are tested against the file.
+- The v0.2 precipitation matrix had to be computed outside the pipeline and
+  passed as `precipitation_hazard`.
+
+---
+
 ## [0.2.0] - 2026-10-26
 
 ITCHI v0.2 keeps the v0.1 structure (direct, indirect and exterior regions;
@@ -175,19 +234,25 @@ pip install -e .
 
 ## Planned
 
-### Near-term
+### Done since v0.1
 
-* Add GitHub Actions continuous integration.
-* Add a formal `docs/methodology.md`.
-* Add a first real-case workflow with one tropical cyclone.
-* Add notebook for single-snapshot diagnostics.
-* Add notebook for single-event synthetic diagnostics.
-* Add examples for NetCDF output writing.
+- GitHub Actions workflow, `docs/methodology.md`, real cases (Willa 2018,
+  Cristóbal 2020, Odile 2014), MSWEP V3.16 adapters and 6/24/72-h
+  climatology, validation against disaster declarations.
 
-### Future
+### v0.2.1 (experiments on top of `compute_itchi_snapshot_v02`)
 
-* Add climatology utilities for Q90/Q95/Q99.
-* Add precipitation snapshot alignment utilities.
-* Add real-data adapters for MSWEP, IBTrACS and ROCLOUD.
-* Add validation routines using observed disaster/emergency records.
-* Add performance optimization for large `xarray`/`dask` grids.
+* Timing convention of P6/R24/A72 against IBTrACS (late alerts in Odile).
+* Declaration–cyclone association by storm name (D5).
+* Information added by the escalation at equal POFD; cross-validation by
+  year and bootstrap by cyclone (D6).
+* Wind-tail cut and h34 in the full pipeline (D1, D2).
+* Hours-in-alert event product (D7).
+* New cyclone cases, risk cuts, landslide records, lead time of the alert
+  relative to the declaration, ITCHI aggregated by municipality.
+
+### Later (v0.3)
+
+* Brief vs persistent rain at >= P99 (D4), soil moisture instead of A72 (D8),
+  wind normalization (D9).
+* Performance optimization for large `xarray`/`dask` grids.

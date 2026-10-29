@@ -33,7 +33,8 @@ The recommended high-level entry points are:
 
 | Level | Function | Module |
 |---|---|---|
-| Single snapshot | `compute_itchi_snapshot_from_grid` | `itchi.pipeline` |
+| Single snapshot, ITCHI v0.2 | `compute_itchi_snapshot_v02` | `itchi.pipeline` |
+| Single snapshot, v0.1 defaults | `compute_itchi_snapshot_from_grid` | `itchi.pipeline` |
 | Event compilation | `compile_itchi_event` | `itchi.compiler` |
 | Event products only | `compute_event_products` | `itchi.aggregation` |
 | Save output | `write_result`, `write_dataset` | `itchi.io` |
@@ -138,6 +139,43 @@ itchi = result["ITCHI"]
 | `ROCLOUD_source` | Source/rule used for ROCLOUD |
 | `ROCLOUD_filled_quadrants` | ROCLOUD quadrants filled by imputation |
 | `wind_hazard_source` | `provided` or `radial_profile` |
+
+### `compute_itchi_snapshot_v02`
+
+ITCHI v0.2 for one synoptic time. Keyword arguments after `a72` are
+keyword-only; their defaults equal `configs/default.yaml`
+(`itchi.config.itchi_v02_settings_from_config` builds them from a
+configuration).
+
+```python
+result = compute_itchi_snapshot_v02(
+    p6, r24, a72,
+    quantiles_6h=q6, quantiles_24h=q24, quantiles_72h=q72,
+    lon=lon, lat=lat, center_lon=-95.0, center_lat=20.0,
+    vmax_kt=95.0, rmw_km=30.0,
+    r34_by_quadrant={"RNE": 120, "RSE": 100, "RSW": 60, "RNW": 80},   # nm
+    rocloud_by_quadrant={"RNE": 650, "RSE": None, "RSW": 0, "RNW": 500},  # km
+)
+```
+
+| Input | Meaning |
+|---|---|
+| `p6`, `r24`, `a72` | Precipitation in (T-6h, T], (T-24h, T] and (T-78h, T-6h] |
+| `quantiles_6h/24h/72h` | Local percentiles {"Q75": ..., "Q90": ...}; `climatology.load_percentile_climatology` |
+| `rocloud_by_quadrant` | ROCLOUD (km); `None`, missing or 0 → R_W06 in that quadrant |
+| `r_w06_km` | Optional R_W06 (scalar or by quadrant); default PA21, V = 2 m/s |
+| `w06_attribution_mode` | `"floor"` (default), `"fallback"`, `"always"` (v0.2 studies), `"never"` (v0.1) |
+| `wind_tail_h34`, `wind_tail_end_kt` | Hazard at R34 (0.2) and optional cut of the tail (kt) |
+| `precip_matrix` | Matrix definition; default `PRECIP_MATRIX_V02` |
+| `precipitation_nan_value` | H_P where P6 or a 6-h percentile is NaN (0.0; `None` keeps NaN) |
+
+| Output | Meaning |
+|---|---|
+| `R_direct_q`, `R_attr_q`, `R_W06_q` | Per-cell direct, attribution and wind-tail radii (km) |
+| `H_P`, `H_P_missing` | Precipitation hazard and cells where it was NaN |
+| `H_W`, `H_Wdir`, `H_Wind`, `wind_kt` | Wind hazard (direct and indirect) and W06 wind |
+| `R_attr_status` | Rule by quadrant: `rocloud`, `w06_floor`, `w06_missing_rocloud`, `w06`, `rocloud_filled` |
+| `itchi_formulation` | `"v0.2"` |
 
 ---
 

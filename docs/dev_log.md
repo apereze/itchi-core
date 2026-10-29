@@ -89,3 +89,14 @@ pre-commit run --all-files
   tiempo sinóptico; R24 y A72 solo escalan H_P.
 - Pendiente para v0.3: decisiones D1–D9 de `docs/verification_v02.md`.
 
+
+## 2026-10-28 — Inicio de 0.2.1: consistencia y punto de entrada v0.2
+
+- `compute_itchi_snapshot_v02` (pipeline): P6, R24, A72 y climatologías de 6/24/72 h → ITCHI v0.2
+  en una sola llamada. Sus valores por defecto son los de `configs/default.yaml`; un test lo verifica.
+- Radio de atribución: ROCLOUD con piso R_W06 por cuadrante (faltante, 0 o menor → R_W06).
+  R_W06 queda solo como fin de la cola de viento.
+- Configuración: convención temporal v0.2 (acumulado de 6 h que termina en T), `p_wet_raw`,
+  modos de atribución documentados, bloque `r_w06` (PA21, 2 m/s).
+- Gancho para experimentos: `wind_tail_end_kt` (corte de la cola, D1).
+- Pendiente: correr `pytest` local y en CI; luego los experimentos de 0.2.1.
