@@ -24,6 +24,10 @@ Productos (data/processed/mswep_v3_return_periods_may_nov.nc):
     rl_gev            (duration, T, lat, lon)        nivel con periodo de retorno T (GEV)
     rl_pot            (duration, R, lat, lon)        nivel con recurrencia R (GPD)
     rl_pot_emp        (duration, R, lat, lon)        idem, empírico (rango de los picos)
+    gpd_full_threshold (duration, lat, lon)          1 si hubo K+1 picos (umbral en la cola);
+                                                     0 si el umbral cayó en el piso de 1 mm
+    events_above_pct  (duration, quantile, lat, lon) eventos independientes por temporada con
+                                                     pico >= percentil q (p_wet_raw) del píxel
 
 Uso posterior: itchi.return_periods.gev_return_period / pot_recurrence_interval
 convierten cualquier lluvia en su periodo de retorno con estos parámetros.
@@ -31,6 +35,7 @@ convierten cualquier lluvia en su periodo de retorno con estos parámetros.
 Ejecutar desde scripts/ (Anaconda Prompt, entorno itchi):
     python periodos_retorno.py
     python periodos_retorno.py --durations 24 --sin-picos
+    python periodos_retorno.py --sin-percentiles     (no cuenta eventos sobre P75-P99)
 """
 
 from __future__ import annotations
@@ -52,6 +57,7 @@ except ModuleNotFoundError:   # paquete no instalado: usar src/ del repo
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from itchi.return_periods import (
+    count_at_or_above,
     declustered_peaks,
     empirical_pot_level,
     fit_gev_lmoments,
@@ -88,6 +94,12 @@ class ConfigRP:
 
     T_gev: tuple = (2.0, 5.0, 10.0, 25.0, 50.0, 100.0)
     R_pot: tuple = (0.25, 1.0 / 3.0, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0)
+
+    # Rareza real de los percentiles de v0.2: eventos independientes por temporada >= Pq
+    percentiles_file: str = str(REPO / "data/processed/mswep_v3_{d}h_percentiles_may_nov.nc")
+    percentiles_var: str = "p_wet_raw"
+    percentiles_q: tuple = (0.75, 0.90, 0.95, 0.99)
+    contar_percentiles: bool = True
 
     filas_por_banda: int = 30            # memoria: filas de latitud procesadas a la vez
     guardar_picos: bool = True
@@ -146,15 +158,40 @@ def contiguous(times: np.ndarray, values: np.ndarray) -> np.ndarray:
     return out
 
 
+def load_percentiles(cfg: ConfigRP) -> Callable[[np.ndarray, np.ndarray], dict]:
+    """Umbrales Pq por duración en la malla (lat, lon) de MSWEP: {d: (nq, ny, nx)}."""
+
+    import xarray as xr
+
+    def load(lat: np.ndarray, lon: np.ndarray) -> dict:
+        out = {}
+        for d in cfg.durations:
+            path = Path(cfg.percentiles_file.format(d=d))
+            if not path.exists():
+                print(f"  Aviso: falta {path.name}; no se cuentan eventos sobre Pq para {d} h")
+                continue
+            with xr.open_dataset(path) as ds:
+                q = ds[cfg.percentiles_var].sel(quantile=list(cfg.percentiles_q), method="nearest",
+                                                tolerance=1e-6).load()
+            q = q.reindex(lat=lat, lon=lon, method="nearest", tolerance=1e-3)
+            out[d] = q.transpose("quantile", "lat", "lon").values.astype(np.float32)
+        return out
+
+    return load
+
+
 # ============================================================================
 # CÁLCULO
 # ============================================================================
 
 
-def compute(cfg: ConfigRP, read: Callable[[int], tuple | None], verbose: bool = True) -> dict:
+def compute(cfg: ConfigRP, read: Callable[[int], tuple | None], verbose: bool = True,
+            thresholds: Callable[[np.ndarray, np.ndarray], dict] | None = None) -> dict:
     """
     Recorre las temporadas una vez y acumula, por duración, los máximos
-    estacionales y los K+1 picos independientes mayores de cada píxel.
+    estacionales, los K+1 picos independientes mayores de cada píxel y, si se
+    dan umbrales (load_percentiles), el número de eventos independientes con
+    pico >= cada umbral.
     """
 
     years = cfg.years
@@ -176,7 +213,12 @@ def compute(cfg: ConfigRP, read: Callable[[int], tuple | None], verbose: bool = 
                 "lat": lat, "lon": lon,
                 "am": {d: np.full((len(years), ny, nx), np.nan, np.float32) for d in cfg.durations},
                 "top": {d: np.full((k1, ny, nx), np.nan, np.float32) for d in cfg.durations},
+                # temporadas con algún dato por píxel (denominador de las tasas de eventos)
+                "n_pk": {d: np.zeros((ny, nx), np.int16) for d in cfg.durations},
             }
+            thr = thresholds(lat, lon) if thresholds is not None else {}
+            state["thr"] = thr
+            state["cnt"] = {d: np.zeros(t.shape, np.int32) for d, t in thr.items()}
         elif (ny, nx) != state["am"][cfg.durations[0]].shape[1:]:
             raise ValueError(f"{year}: la malla no coincide con la de los años anteriores.")
 
@@ -188,6 +230,9 @@ def compute(cfg: ConfigRP, read: Callable[[int], tuple | None], verbose: bool = 
                 state["am"][d][iy, band] = seasonal_maximum(r, cfg.min_valid_fraction)
                 peaks = declustered_peaks(r, cfg.separacion_h[d] // 6, cfg.wet)
                 state["top"][d][:, band] = update_top_k(state["top"][d][:, band], peaks, k1)
+                state["n_pk"][d][band] += np.isfinite(r).any(axis=0)
+                if d in state["cnt"]:
+                    state["cnt"][d][:, band] += count_at_or_above(peaks, state["thr"][d][:, band])
         leidos.append(year)
         if verbose:
             print(f"  {year}: {p6.shape[0]} pasos · {(time.time() - t0) / 60:.1f} min")
@@ -200,18 +245,26 @@ def compute(cfg: ConfigRP, read: Callable[[int], tuple | None], verbose: bool = 
     for d in cfg.durations:
         am = state["am"][d]
         n_seasons = np.isfinite(am).sum(axis=0)
+        n_pk = state["n_pk"][d].astype(float)
         gev = fit_gev_lmoments(am, min_n=cfg.min_temporadas, xi_bounds=cfg.xi_bounds)
-        gpd = fit_gpd_top_k(state["top"][d], np.maximum(n_seasons, 1), xi_bounds=cfg.xi_bounds,
+        gpd = fit_gpd_top_k(state["top"][d], np.maximum(n_pk, 1), xi_bounds=cfg.xi_bounds,
                             min_excesses=cfg.min_excesos)
+        # Umbral en la cola solo si hubo K+1 picos >= wet; si no, u es el piso de 1 mm
+        # y la GPD se ajusta a todos los eventos húmedos (zonas áridas)
+        full = np.isfinite(state["top"][d][-1])
         T = np.asarray(cfg.T_gev).reshape(-1, 1, 1)
         R = np.asarray(cfg.R_pot).reshape(-1, 1, 1)
         fits[d] = {
-            "n_seasons": n_seasons, "gev": gev, "gpd": gpd,
+            "n_seasons": n_seasons, "gev": gev, "gpd": gpd, "full_threshold": full,
             "rl_gev": gev_return_level(T, gev["xi"], gev["sigma"], gev["mu"]),
             "rl_pot": pot_return_level(R, gpd["u"], gpd["sigma"], gpd["xi"], gpd["rate"]),
             "rl_pot_emp": empirical_pot_level(state["top"][d][:-1], float(np.median(n_seasons)),
                                               cfg.R_pot),
         }
+        if d in state["cnt"]:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                rate_q = state["cnt"][d] / n_pk
+            fits[d]["events_above_pct"] = np.where(np.isfinite(state["thr"][d]) & (n_pk > 0), rate_q, np.nan)
     return {"state": state, "fits": fits, "years": years, "leidos": leidos}
 
 
@@ -247,6 +300,12 @@ def to_dataset(res: dict, cfg: ConfigRP):
     ds["rl_gev"] = (("duration", "T") + sp, stack(lambda d: res["fits"][d]["rl_gev"]))
     ds["rl_pot"] = (("duration", "R") + sp, stack(lambda d: res["fits"][d]["rl_pot"]))
     ds["rl_pot_emp"] = (("duration", "R") + sp, stack(lambda d: res["fits"][d]["rl_pot_emp"]))
+    ds["gpd_full_threshold"] = (("duration",) + sp,
+                                stack(lambda d: res["fits"][d]["full_threshold"]).astype(np.int8))
+    if all("events_above_pct" in res["fits"][d] for d in durs):
+        ds = ds.assign_coords(quantile=("quantile", list(cfg.percentiles_q)))
+        ds["events_above_pct"] = (("duration", "quantile") + sp,
+                                  stack(lambda d: res["fits"][d]["events_above_pct"]))
 
     mm = "mm per accumulation window of `duration` hours"
     attrs = {
@@ -268,6 +327,12 @@ def to_dataset(res: dict, cfg: ConfigRP):
     }
     if cfg.guardar_picos:
         attrs["peaks"] = dict(units=mm, long_name="largest independent peaks of R_d, descending")
+    attrs["gpd_full_threshold"] = dict(units="1", long_name="1: K+1 peaks >= peak_min_mm, threshold in the tail; "
+                                       "0: fewer peaks, gpd_u is the wet floor (arid pixel)")
+    if "events_above_pct" in ds:
+        attrs["events_above_pct"] = dict(units="events per season",
+                                         long_name=f"independent events with peak >= {cfg.percentiles_var} "
+                                                   "quantile of the same pixel and duration")
     for name, a in attrs.items():
         ds[name].attrs.update(a)
     ds.attrs.update(
@@ -301,14 +366,16 @@ def run(cfg: ConfigRP = ConfigRP()):
     print("=" * 75)
     print(f"durations {cfg.durations} h · temporadas {cfg.start_year}-{cfg.end_year} · "
           f"K = {cfg.k} picos por píxel · {local_path(cfg.directory)}")
-    res = compute(cfg, read_year_xarray(cfg))
+    res = compute(cfg, read_year_xarray(cfg),
+                  thresholds=load_percentiles(cfg) if cfg.contar_percentiles else None)
     ds = to_dataset(res, cfg)
     write(ds, cfg)
     for d in cfg.durations:
         f = res["fits"][d]
         print(f"  {d:>2} h: GEV válido en {np.isfinite(f['gev']['xi']).mean():.1%} de los píxeles, "
               f"forma acotada en {f['gev']['xi_clipped'].mean():.1%}; "
-              f"GPD válido en {np.isfinite(f['gpd']['xi']).mean():.1%}")
+              f"GPD válido en {np.isfinite(f['gpd']['xi']).mean():.1%}, "
+              f"umbral en la cola en {f['full_threshold'].mean():.1%}")
     print(f"\nPROCESO TERMINADO · {(time.time() - t0) / 60:.1f} min · {cfg.out_file}")
     return ds
 
@@ -319,8 +386,11 @@ if __name__ == "__main__":
     ap.add_argument("--filas-por-banda", type=int, default=ConfigRP.filas_por_banda,
                     help="baja este número si falta memoria")
     ap.add_argument("--sin-picos", action="store_true", help="no guarda los picos (archivo menor)")
+    ap.add_argument("--sin-percentiles", action="store_true",
+                    help="no cuenta eventos sobre los percentiles de v0.2")
     ap.add_argument("--out", default=ConfigRP.out_file)
     a = ap.parse_args()
     run(ConfigRP(durations=tuple(a.durations), filas_por_banda=a.filas_por_banda,
-                 guardar_picos=not a.sin_picos, out_file=a.out))
+                 guardar_picos=not a.sin_picos, contar_percentiles=not a.sin_percentiles,
+                 out_file=a.out))
 
