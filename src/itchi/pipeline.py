@@ -58,7 +58,7 @@ from itchi.parametric_radii import (
 from itchi.precipitation import (
     PRECIP_MATRIX_V02,
     compute_precipitation_hazard,
-    compute_precipitation_matrix_hazard,
+    compute_precipitation_hazard_from_spec,
 )
 from itchi.quality_control import run_snapshot_quality_control
 from itchi.radii import (
@@ -629,7 +629,9 @@ def compute_itchi_snapshot_v02(
         Definition of R_W06 (parametric_radii.compute_w06_reference_radii);
         None uses parametric_radii.R_W06_DEFAULTS (PA21, 2 m s-1).
     precip_matrix : Mapping or None, default=None
-        Matrix definition; None uses precipitation.PRECIP_MATRIX_V02.
+        Precipitation spec; None uses precipitation.PRECIP_MATRIX_V02. A spec
+        with kind == "class_table" (e.g. precipitation.PRECIP_TABLES_B1["M1"])
+        uses the class table P6 x R24 x A72.
     precipitation_nan_value : float or None, default=0.0
         H_P where it is NaN (missing P6 or 6-h percentile); None keeps NaN.
         The cells are reported in "H_P_missing".
@@ -661,14 +663,14 @@ def compute_itchi_snapshot_v02(
     if vmax is None:
         raise ValueError(f"vmax_kt must be finite and > 0. Received: {vmax_kt}")
 
-    # 1. Precipitation matrix
+    # 1. Precipitation: v0.2 matrix or class table (precip_matrix["kind"])
     matrix = PRECIP_MATRIX_V02 if precip_matrix is None else precip_matrix
-    hazard_precip = compute_precipitation_matrix_hazard(
+    hazard_precip = compute_precipitation_hazard_from_spec(
         precipitation=p6,
         quantiles_6h=quantiles_6h,
         escalation_values={"R24": r24, "A72": a72},
         escalation_quantiles={"R24": quantiles_24h, "A72": quantiles_72h},
-        matrix=matrix,
+        spec=matrix,
     )
     precip_missing = _missing(hazard_precip)
     if precipitation_nan_value is not None:
@@ -811,7 +813,9 @@ def compute_itchi_snapshot_v02(
         "w06_x1_calibrated": wind["x1_calibrated"],
         "wind_tail_h34": float(wind_tail_h34),
         "wind_tail_end_kt": wind_tail_end_kt,
-        "precipitation_hazard_source": "matrix_v02",
+        "precipitation_hazard_source": (
+            "class_table" if matrix.get("kind") == "class_table" else "matrix_v02"
+        ),
         "itchi_version": ITCHI_VERSION,
         "itchi_formulation": "v0.2",
     }

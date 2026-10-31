@@ -14,7 +14,7 @@
 
 project:
   name: "itchi-core"
-  version: "0.2.0"
+  version: "0.2.1"
   description: "Core computational workflow for ITCHI v0.2"
 
 
@@ -86,7 +86,12 @@ precipitation:
   # (precipitation.compute_precipitation_matrix_hazard). Calibrated with
   # municipality-cyclone pairs (scripts/negativos_w06.py); discrete rule:
   # P6 in P95-P99 with R24 >= P95 and A72 >= P75 -> maximum.
-  hazard_model: "matrix_v02"          # "ramp_v01" | "matrix_v02"
+  # "matrix_v02" (precipitation.compute_precipitation_matrix_hazard) or
+  # "class_table" (precipitation.compute_precipitation_class_table_hazard,
+  # block precipitation.class_table below; Block 1 experiments in
+  # configs/experiments/b1/). "ramp_v01" is the v0.1 Q90/Q95/Q99 ramp of
+  # compute_itchi_snapshot_from_grid.
+  hazard_model: "matrix_v02"          # "ramp_v01" | "matrix_v02" | "class_table"
   matrix_v02:
     snapshot_hours: 6                 # P6(T)  = precipitation in (T-6h, T]
     p6_nodes: ["Q75", "Q90", "Q95", "Q99"]
@@ -108,6 +113,10 @@ precipitation:
     # pixel without climatology): 0.0 = no precipitation hazard (as in
     # notebooks 05-08); null keeps NaN.
     nan_hazard_value: 0.0
+
+  # Class table P6 x R24 x A72, used only with hazard_model = "class_table".
+  # Format in precipitation.py (PRECIP_TABLES_B1) and docs/experimento_b1.md.
+  class_table: null
 
   epsilon: 1.0e-6
 
@@ -197,6 +206,8 @@ wind:
   # docs/verification_v02.md). null = tail ends at R_W06. The tail never
   # extends beyond R_W06: V_out = max(V(R_W06_q), tail_end_wind_kt).
   tail_end_wind_kt: null
+  # Same cut in m/s (e.g. 12.0 = 23.3 kt); give at most one of the two.
+  tail_end_wind_ms: null
 
   # Tropical-storm-force wind threshold
   reference_wind_kt: 34.0

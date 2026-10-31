@@ -445,10 +445,21 @@ def dur_step_stats(arr: np.ndarray, qpix: np.ndarray, imax6: np.ndarray, name: s
     })
 
 
+def local_path(path: str | Path) -> Path:
+    """
+    Ruta de Windows ("D:/...") a su montaje en WSL/Linux ("/mnt/d/..."); sin
+    cambios en Windows o si la ruta ya es de Linux.
+    """
+    s = str(path).replace("\\", "/")
+    if os.name != "nt" and re.match(r"^[A-Za-z]:/", s):
+        return Path(f"/mnt/{s[0].lower()}") / s[3:]
+    return Path(s)
+
+
 def open_6h_year(cfg: Config, year: int) -> xr.DataArray | None:
 
-    path = os.path.join(cfg.mswep_6h_dir, f"mswep_v3_6h_{year}.nc")
-    if not os.path.exists(path):
+    path = local_path(cfg.mswep_6h_dir) / f"mswep_v3_6h_{year}.nc"
+    if not path.exists():
         return None
 
     return xr.open_dataset(path)["precipitation"]

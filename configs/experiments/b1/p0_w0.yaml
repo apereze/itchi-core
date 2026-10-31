@@ -1,0 +1,4 @@
+# Bloque 1, celda P0-W0: ITCHI v0.2 sin cambios (referencia del diseño 2x2).
+experiment:
+  name: "b1_p0_w0"
+  description: "v0.2: matriz v0.2 y cola de viento hasta R_W06"

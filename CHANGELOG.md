@@ -7,12 +7,13 @@ and this project uses semantic versioning principles while the API is under acti
 
 ---
 
-## [Unreleased] - 0.2.1
+## [0.2.1] - 2026-10-30
 
-Consistency fixes and a single v0.2 entry point, as the base for the 0.2.1
-experiments. The v0.2 formulation (matrix, W06 tail, h34) is unchanged; the
+Consistency fixes, a single v0.2 entry point and the Block 1 experiments
+(P95 as maximum, R24/A72 thresholds, wind-tail cut). The v0.2 formulation
+(matrix, W06 tail, h34) is unchanged and remains the default; the
 attribution radius changes from R_W06 (verification studies) to ROCLOUD with
-an R_W06 floor.
+an R_W06 floor. Next development line: v0.3 (`docs/plan_v0.3.md`).
 
 ### Added
 
@@ -41,6 +42,37 @@ an R_W06 floor.
   v0.2 entry point equal `configs/default.yaml` and a test that the entry
   point reproduces the setting of the v0.2 studies.
 
+- Block 1 (`docs/experimento_b1.md`): `precipitation.compute_precipitation_class_table_hazard`,
+  a class table P6 x R24 x A72 against each variable's own percentiles,
+  interpolated multilinearly (non-decreasing in every input); spec by base
+  ramp and rules or explicit table, optional P75 gate.
+  `PRECIP_TABLE_V02` reproduces the v0.2 matrix to 1e-12;
+  `PRECIP_TABLES_B1` holds the candidates with P95 as maximum (M0 6 h only,
+  M1 v0.2 escalation one class earlier, M2 gated maximum of durations).
+  Helpers `compute_percentile_coordinate`, `build_precipitation_class_table`,
+  `compute_precipitation_hazard_from_spec`.
+- `compute_itchi_snapshot_v02` accepts a class-table spec as `precip_matrix`
+  (`precipitation_hazard_source = "class_table"`).
+- Configuration: `precipitation.hazard_model: "class_table"` with
+  `precipitation.class_table`; `wind.tail_end_wind_ms`;
+  `config.load_experiment_config` and `config.merge_config` (overlays);
+  `configs/experiments/b1/p{0,1}_w{0,1}.yaml` (2 x 2 design: v0.2 / M1 x
+  tail to R_W06 / cut at 12 m/s).
+- `scripts/experimento_b1.py`: candidates and 2 x 2 on the
+  municipality-cyclone pairs (cell table P(D | P6 x R24 x A72), M1 threshold
+  grid and ablations, M3 calibrated table with leave-one-year-out
+  validation, wind variants, AUC by year, PSS, SEDI, bootstrap by cyclone,
+  POD at equal POFD).
+- `scripts/negativos_w06.py --guardar-pasos`: per-step table for the
+  experiment; `lat_ct` added to the steps.
+- `scripts/figuras_b1.py` and `notebooks/third test/09_bloque1_experimentos.ipynb`:
+  figures of each experiment (part A, no data: hazard of each scheme, class
+  maps P6 x R24, wind tails; part B: cell evidence, candidates, ROC,
+  threshold grid, 2 x 2, class frequencies) and the decision table.
+- `tests/test_class_table.py`, `tests/test_experimento_b1.py`.
+- `scripts/declaratorias_6h.local_path`: `D:/...` paths also work from WSL;
+  `negativos_w06.py` stops with a clear message if no 6-h file is read.
+
 ### Changed
 
 - `configs/default.yaml`: header states which function uses it;
@@ -64,6 +96,23 @@ an R_W06 floor.
 - The v0.2 precipitation matrix had to be computed outside the pipeline and
   passed as `precipitation_hazard`.
 
+
+### Notes (Block 1 results, `docs/experimento_b1.md` section 9)
+
+- 381 929 municipality-cyclone pairs, 2 % with declaration, index evaluated
+  at every step of the event.
+- P95 of 6 h as maximum (M0) does not improve discrimination: PSS class 5
+  0.553 -> 0.546 (90 % CI of the difference [-0.023, +0.008]), POD at equal
+  POFD -0.004 (same ROC curve), AUC 0.869 -> 0.842, +61 % class-5 alerts.
+  Not adopted.
+- R24/A72 below P95 add little: best +0.006 PSS over M0 (R24 >= P95 alone);
+  A72 >= P75 alone -0.008. Above P95 they matter: P(D) with P6 >= P95 and
+  R24 >= P95 goes from 5.7 % (A72 < P75) to 21.8 % (A72 >= P95).
+- Wind tail cut: 12 m/s restores class 1 (PSS 0.000 -> 0.472) with AUC
+  0.887; 17 kt gives 0.480 and 0.895. Rain and wind effects are additive.
+- Declarations are a noisy, coarse impact record; from v0.3 the hazard is
+  defined climatologically (return periods, absolute wind thresholds) and
+  declarations are used only as an ordinal check.
 ---
 
 ## [0.2.0] - 2026-10-26

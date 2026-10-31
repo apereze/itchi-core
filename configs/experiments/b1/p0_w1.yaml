@@ -1,0 +1,8 @@
+# Bloque 1, celda P0-W1: lluvia v0.2; cola de viento cortada en 12 m/s.
+experiment:
+  name: "b1_p0_w1"
+  description: "matriz v0.2 y cola cortada en 12 m/s"
+
+wind:
+  # Corte de la cola de viento en 12 m/s (23.3 kt, viento sostenido 1 min del perfil W06)
+  tail_end_wind_ms: 12.0

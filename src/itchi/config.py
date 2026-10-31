@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+KNOT_TO_MS: float = 0.514444  # same value as itchi.wind_profiles.KNOT_TO_MS
+
 
 def load_config(config_path: str | Path) -> dict[str, Any]:
     """
@@ -90,6 +92,71 @@ def load_default_config() -> dict[str, Any]:
     return load_config(config_path)
 
 
+def merge_config(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    Recursive merge: values of ``overlay`` replace those of ``base``; nested
+    mappings are merged key by key. Inputs are not modified.
+    """
+    merged: dict[str, Any] = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
+            merged[key] = merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_experiment_config(
+    overlay_path: str | Path,
+    base: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Configuration of an experiment: configs/default.yaml with an overlay.
+
+    The overlay (e.g. configs/experiments/b1/p1_w1.yaml) lists only the keys
+    that change; ``experiment`` (name, description) is kept for traceability.
+
+    Parameters
+    ----------
+    overlay_path : str or pathlib.Path
+        YAML file with the changed keys.
+    base : Mapping or None, default=None
+        Base configuration; None loads configs/default.yaml.
+
+    Returns
+    -------
+    dict[str, Any]
+        Merged configuration.
+    """
+    cfg = load_default_config() if base is None else base
+    return merge_config(cfg, load_config(overlay_path))
+
+
+def class_table_spec_from_config(table_cfg: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    Class-table spec (precipitation.compute_precipitation_class_table_hazard)
+    from the YAML block precipitation.class_table.
+    """
+    spec: dict[str, Any] = {
+        "kind": "class_table",
+        "axes": {str(k): tuple(str(n) for n in v) for k, v in table_cfg["axes"].items()},
+    }
+    if "table" in table_cfg:
+        spec["table"] = table_cfg["table"]
+    else:
+        spec["p6_values"] = tuple(float(v) for v in table_cfg["p6_values"])
+        spec["rules"] = tuple(
+            {
+                "when": {str(k): str(v) for k, v in rule["when"].items()},
+                "p6_values": tuple(float(v) for v in rule["p6_values"]),
+            }
+            for rule in table_cfg.get("rules", ()) or ()
+        )
+    if table_cfg.get("gate"):
+        spec["gate"] = {str(k): str(v) for k, v in table_cfg["gate"].items()}
+    return spec
+
+
 def itchi_v02_settings_from_config(
     config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -125,11 +192,17 @@ def itchi_v02_settings_from_config(
     r_w06_cfg = radii_cfg["r_w06"]
     weights = cfg["itchi"]
 
-    tail_end = wind_cfg.get("tail_end_wind_kt")
+    tail_end_kt = wind_cfg.get("tail_end_wind_kt")
+    tail_end_ms = wind_cfg.get("tail_end_wind_ms")
+    if tail_end_kt is not None and tail_end_ms is not None:
+        raise ValueError("Give wind.tail_end_wind_kt or wind.tail_end_wind_ms, not both.")
+    if tail_end_ms is not None:
+        tail_end_kt = float(tail_end_ms) / KNOT_TO_MS
     nan_value = matrix_cfg.get("nan_hazard_value", 0.0)
 
-    return {
-        "precip_matrix": {
+    model = str(cfg["precipitation"].get("hazard_model", "matrix_v02"))
+    if model == "matrix_v02":
+        precip_spec: dict[str, Any] = {
             "p6_nodes": tuple(str(v) for v in matrix_cfg["p6_nodes"]),
             "base": tuple(float(v) for v in matrix_cfg["base"]),
             "escalated": tuple(float(v) for v in matrix_cfg["escalated"]),
@@ -138,9 +211,16 @@ def itchi_v02_settings_from_config(
                 for name, bounds in matrix_cfg["escalation"].items()
             },
             "combine": str(matrix_cfg.get("combine", "all")),
-        },
+        }
+    elif model == "class_table":
+        precip_spec = class_table_spec_from_config(cfg["precipitation"]["class_table"])
+    else:
+        raise ValueError(f"Unsupported precipitation.hazard_model: {model!r}")
+
+    return {
+        "precip_matrix": precip_spec,
         "wind_tail_h34": float(wind_cfg["tail_h34"]),
-        "wind_tail_end_kt": None if tail_end is None else float(tail_end),
+        "wind_tail_end_kt": None if tail_end_kt is None else float(tail_end_kt),
         "w06_attribution_mode": str(radii_cfg["attribution_radius_mode"]),
         "w06_direct_fallback": bool(radii_cfg.get("use_as_direct_fallback", True)),
         "r_w06_kwargs": {

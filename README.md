@@ -7,7 +7,7 @@
 
 **Integrated Tropical Cyclone Hazard Index**
 
-Repository for the development of the computational core of **ITCHI**, a physically based tropical-cyclone hazard index. Current version: **0.2.0**.
+Repository for the development of the computational core of **ITCHI**, a physically based tropical-cyclone hazard index. Current version: **0.2.1** (formulation v0.2; 0.2.1 adds the v0.2 entry point, consistency fixes and the Block 1 experiments, see [`CHANGELOG.md`](CHANGELOG.md)).
 
 **What is new in v0.2.** Entry point: `pipeline.compute_itchi_snapshot_v02` (P6, R24, A72 and their percentile climatologies; keyword defaults equal [`configs/default.yaml`](configs/default.yaml)). `compute_itchi_snapshot_from_grid` keeps the v0.1 defaults, with the v0.2 options as opt-in arguments. Details in [`docs/methodology.md`](docs/methodology.md), results in [`docs/verification_v02.md`](docs/verification_v02.md), changes in [`CHANGELOG.md`](CHANGELOG.md):
 
