@@ -7,13 +7,14 @@
 
 **Integrated Tropical Cyclone Hazard Index**
 
-Repository for the development of the computational core of **ITCHI**, a physically based tropical-cyclone hazard index. Current version: **0.2.0**.
+Repository for the development of the computational core of **ITCHI**, a physically based tropical-cyclone hazard index. Current version: **0.2.1** (formulation v0.2; 0.2.1 adds the v0.2 entry point, consistency fixes and the Block 1 experiments, see [`CHANGELOG.md`](CHANGELOG.md)).
 
-**What is new in v0.2** (opt-in; the defaults reproduce v0.1). Details in [`docs/methodology.md`](docs/methodology.md), results in [`docs/verification_v02.md`](docs/verification_v02.md), changes in [`CHANGELOG.md`](CHANGELOG.md):
+**What is new in v0.2.** Entry point: `pipeline.compute_itchi_snapshot_v02` (P6, R24, A72 and their percentile climatologies; keyword defaults equal [`configs/default.yaml`](configs/default.yaml)). `compute_itchi_snapshot_from_grid` keeps the v0.1 defaults, with the v0.2 options as opt-in arguments. Details in [`docs/methodology.md`](docs/methodology.md), results in [`docs/verification_v02.md`](docs/verification_v02.md), changes in [`CHANGELOG.md`](CHANGELOG.md):
 
 - **Precipitation matrix.** The 6-h rain (P6) is compared with the pixel's own percentiles (alert from P75: P75 → 0, P90 → 0.25, P95 → 0.5, P99 → 1). The P95–P99 band is escalated towards the maximum (P95 → 0.8) when the rain persists (24-h accumulation R24 ≥ P95) over wet ground (72-h antecedent A72 ≥ P75). Continuous form in `precipitation.compute_precipitation_matrix_hazard`.
 - **Calibration with disaster declarations.** 381 929 municipality–cyclone pairs (2000–2025, 2 % with a TC-associated declaration): the escalation raises the maximum-level Peirce skill score from 0.41 to 0.51 (0.55 → 0.67 for disasters) and leaves the lower levels unchanged.
-- **W06 wind with an outer tail.** W06 profile calibrated to the observed R34 by quadrant; hazard decays from `h34` at R34 to zero at the attribution radius and enters the indirect component (`wind_model="w06_tail"`).
+- **W06 wind with an outer tail.** W06 profile calibrated to the observed R34 by quadrant; hazard decays from `h34` at R34 to zero at R_W06 (radius where the W06/PA21 wind falls to 2 m/s) and enters the indirect component.
+- **Attribution radius.** ROCLOUD by quadrant with R_W06 as a floor: where ROCLOUD is missing, zero or smaller than R_W06, R_W06 is used (`radii.resolve_attribution_radius_with_w06`, mode `"floor"`). R_W06 bounds the wind; the attribution radius bounds the indirect precipitation.
 - **Multi-duration climatology and verification scripts.** MSWEP V3.16 percentiles of 6, 24 and 72 h; declarations vs rain; municipality–cyclone pairs.
 - **Case studies.** Cristóbal 2020 and Odile 2014, v0.1 vs v0.2, by snapshot and by position (notebooks 05–08).
 - **Open for v0.3.** The default wind tail gives wind hazard to 96 % of the pairs and removes the skill of the lowest class; cutting it at 17 kt is proposed. See the decision list in [`docs/verification_v02.md`](docs/verification_v02.md#6-open-decisions-for-v03).
@@ -94,6 +95,33 @@ python examples/smoke_test_from_tables.py \
   --figure-path outputs/figures/smoke_test_from_tables.png \
   --output-path outputs/events/smoke_test_from_tables.nc
 ```
+
+ITCHI v0.2 for one synoptic time T (P6, R24 and A72 from MSWEP V3.16 6-h accumulations):
+
+```python
+from itchi.climatology import load_percentile_climatology
+from itchi.config import itchi_v02_settings_from_config, load_default_config
+from itchi.pipeline import compute_itchi_snapshot_v02
+from itchi.precipitation import compute_antecedent_precipitation
+
+# p6: 6-h accumulations (time, lat, lon); the window ends at each time stamp
+r24 = compute_antecedent_precipitation(p6, hours=24, exclude_current=False)
+a72 = compute_antecedent_precipitation(p6, hours=72, exclude_current=True)
+clim = {d: load_percentile_climatology(
+            f"data/processed/mswep_v3_{d}h_percentiles_may_nov.nc", template=p6)
+        for d in (6, 24, 72)}
+
+result = compute_itchi_snapshot_v02(
+    p6.sel(time=T), r24.sel(time=T), a72.sel(time=T),
+    quantiles_6h=clim[6], quantiles_24h=clim[24], quantiles_72h=clim[72],
+    lon=lon2d, lat=lat2d, center_lon=row.lon, center_lat=row.lat,
+    vmax_kt=row.vmax_kt, rmw_km=row.rmw_km,
+    r34_by_quadrant=r34_nm, rocloud_by_quadrant=rocloud_km,
+    **itchi_v02_settings_from_config(load_default_config()),  # optional: same as defaults
+)
+```
+
+`lon2d` and `lat2d` must be on the same grid and of the same type (NumPy or xarray) as `p6`.
 
 The `outputs/` directory is ignored by Git.
 
@@ -182,7 +210,7 @@ Indirect hazard = precipitation between R_direct and ROCLOUD
 
 The exterior region does not contribute to the index.
 
-In the v0.2 studies the attribution radius is the W06 (PA21) radius where the wind falls to 2 m/s (`R_W06`, median 743 km over the verification pairs); it is passed through the same `rocloud_by_quadrant` argument as ROCLOUD.
+In the v0.2 verification studies the attribution radius was the W06 (PA21) radius where the wind falls to 2 m/s (`R_W06`, median 743 km over the verification pairs). From v0.2.1, `compute_itchi_snapshot_v02` uses ROCLOUD with R_W06 as a floor by quadrant, and R_W06 only as the end of the wind tail; the study setting is reproduced with `w06_attribution_mode="always"`.
 
 ### `R34` versus `R_direct`
 
@@ -478,7 +506,7 @@ Compiled events may be exported as NetCDF or Zarr with spatial fields, event pro
 | Core modules | Done | Precipitation, geometry, masks, components and index |
 | Radii and units | Done | Unit conversion, quadrants, `R_direct`, `ROCLOUD` |
 | Wind | Done | Simple radial profile and `V*` normalization |
-| Snapshot precipitation | Done | Valid-time snapshot selection without accumulation |
+| Snapshot precipitation | Done | v0.1: valid-time snapshot selection; v0.2: 6-h accumulation ending at T, with R24 and A72 |
 | Climatology utilities | Done | Q90/Q95/Q99 computation and extraction utilities |
 | Integrated pipeline | Done | Snapshot-level calculation with optional quality control |
 | Aggregation | Done | `ITCHI_max` and `ITCHI_acc` |
@@ -495,6 +523,7 @@ Compiled events may be exported as NetCDF or Zarr with spatial fields, event pro
 | Real cyclone cases | Done | Willa 2018, Cristóbal 2020, Odile 2014 (notebooks) |
 | Gridded climatology | Done | MSWEP V3.16 6/24/72-h local percentiles (`scripts/percentiles_6h.py`) |
 | v0.2 precipitation matrix | Done | Escalation by R24 and A72, calibrated with declarations |
+| v0.2 entry point | Done (v0.2.1) | `compute_itchi_snapshot_v02`; defaults tied to `configs/default.yaml` by a test |
 | v0.2 wind tail | Done, under review | W06 with outer tail; cut at 17 kt proposed (D1) |
 | Impact validation | In progress | 381 929 municipality–cyclone pairs; cross-validation and association by storm name pending |
 

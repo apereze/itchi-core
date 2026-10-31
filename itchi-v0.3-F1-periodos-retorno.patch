@@ -1,0 +1,1716 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 5d8aad3..79ccf5b 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,6 +7,25 @@ and this project uses semantic versioning principles while the API is under acti
+ 
+ ---
+ 
++## [Unreleased] - 0.3.0
++
++Development line v0.3 (`docs/plan_v0.3.md`): hazard defined by climatological
++rarity (return periods) and absolute wind thresholds, on a catalog of physical
++states under every tropical cyclone 2000-2025.
++
++### Added
++
++- F1, rainfall return periods (`docs/periodos_retorno.md`):
++  `itchi.return_periods` (running sums, declustered peaks, top-K, sample
++  L-moments, GEV and GPD by L-moments, return levels and periods,
++  conversions; NumPy only); `scripts/periodos_retorno.py` (seasonal maxima
++  and the K largest independent peaks of 6/24/72-h MSWEP V3 per pixel,
++  `mswep_v3_return_periods_may_nov.nc`); `scripts/figuras_retorno.py` and
++  `notebooks/third test/10_periodos_retorno.ipynb`;
++  `tests/test_return_periods.py`, `tests/test_periodos_retorno_script.py`.
++
++---
++
+ ## [0.2.1] - 2026-10-30
+ 
+ Consistency fixes, a single v0.2 entry point and the Block 1 experiments
+diff --git a/docs/periodos_retorno.md b/docs/periodos_retorno.md
+new file mode 100644
+index 0000000..ce445ab
+--- /dev/null
++++ b/docs/periodos_retorno.md
+@@ -0,0 +1,63 @@
++# Climatología de rareza de la lluvia: periodos de retorno (paso 1)
++
++ITCHI mide el peligro de un ciclón por lo **raro** que es lo que produce en
++cada lugar. Este paso calcula, por píxel de MSWEP V3 (0.1°, mayo–noviembre,
++2000–2025, todas las causas de lluvia) y por duración (6, 24, 72 h), cada
++cuánto se alcanza una cantidad de lluvia.
++
++## Definiciones
++
++- R_d(T) es la lluvia en (T − d, T], suma de acumulados de 6 h dentro de cada
++  temporada.
++- **Periodo de retorno T (años)**, con máximos estacionales + GEV:
++  P(máximo de la temporada > x) = 1/T. Es confiable para T ≥ 2 años. Con 26
++  temporadas, la estimación empírica alcanza unos 10 años; más allá es
++  extrapolación.
++- **Intervalo de recurrencia R (años)**, con picos independientes + GPD (POT):
++  R(x) = 1/λ(x), donde λ es el número medio de eventos por temporada con pico
++  ≥ x.
++  - Eventos: picos separados al menos 48 h (6 y 24 h) o 96 h (72 h), y ≥ 1 mm.
++  - Umbral: el pico número K + 1 del registro, con K = 3 × 26.
++  - Sirve también por debajo de un año.
++- **Relación:** T = 1 / (1 − exp(−1/R)), si los eventos son de Poisson.
++- **Estimadores:** L-momentos (Hosking, 1990; Hosking y Wallis, 1987), con la
++  forma ξ acotada en [−0.5, 0.5].
++
++## Archivos
++
++| Archivo | Contenido |
++|---|---|
++| `src/itchi/return_periods.py` | Funciones NumPy: sumas móviles, picos independientes, GEV, GPD, conversiones |
++| `scripts/periodos_retorno.py` | Lee una vez los 26 años y escribe `data/processed/mswep_v3_return_periods_may_nov.nc` |
++| `scripts/figuras_retorno.py` | Figuras R1–R5 y tabla resumen |
++| `notebooks/third test/10_periodos_retorno.ipynb` | Figuras con la guía de lectura |
++
++```bat
++conda activate itchi
++cd scripts
++python periodos_retorno.py                        :: ~30 min, ~2-3 GB de RAM
++python periodos_retorno.py --filas-por-banda 10   :: si falta memoria
++```
++
++## Uso posterior
++
++Cualquier lluvia x de un píxel se convierte en su rareza con:
++
++```python
++from itchi.return_periods import gev_return_period, pot_recurrence_interval
++T = gev_return_period(x, gev_xi, gev_sigma, gev_mu)            # años, T >= 1
++R = pot_recurrence_interval(x, gpd_u, gpd_sigma, gpd_xi, gpd_rate)   # NaN si x < gpd_u
++```
++
++El paso 2 (catálogo de estados bajo los ciclones) guarda P6, R24, A72 y su
++rareza para definir los niveles de peligro en periodo de retorno.
++
++## Limitaciones
++
++- 26 temporadas: los niveles de T ≥ 25 años son extrapolaciones. Si R5 muestra
++  ruido, conviene un ajuste regional (L-momentos regionales) o acotar la forma.
++- Los picos se separan con una ventana móvil, así que un pico menor que queda a
++  menos de la separación de otro mayor no cuenta como evento. Es conservador:
++  subestima ligeramente el número de eventos.
++- MSWEP subestima los extremos más localizados por su resolución de 0.1°; los
++  niveles son de área (~11 km), no de pluviómetro.
+diff --git a/notebooks/third test/10_periodos_retorno.ipynb b/notebooks/third test/10_periodos_retorno.ipynb
+new file mode 100644
+index 0000000..3aa7711
+--- /dev/null
++++ b/notebooks/third test/10_periodos_retorno.ipynb	
+@@ -0,0 +1,249 @@
++{
++ "cells": [
++  {
++   "cell_type": "markdown",
++   "metadata": {},
++   "source": [
++    "# Paso 1 de la climatología de ITCHI: periodos de retorno de la lluvia\n",
++    "\n",
++    "**Qué se calcula.** Para cada píxel de MSWEP V3 (0.1°, mayo–noviembre, 2000–2025) y para cada duración (6, 24 y 72 h), se calcula **cada cuánto se alcanza** una cantidad de lluvia. Se usan todas las lluvias, no solo las de ciclones, porque el peligro de un ciclón se mide contra lo que es raro en ese lugar.\n",
++    "\n",
++    "**Por qué.** El P95 de 6 h que usamos hasta ahora es el valor que supera el 5 % de las ventanas *con lluvia* del píxel. Ese número no dice cuántas veces por temporada ocurre, porque depende de cuánto llueve ahí. El periodo de retorno sí lo dice, y en las mismas unidades en todo el país.\n",
++    "\n",
++    "## Cómo se lee un periodo de retorno\n",
++    "\n",
++    "- **T = 10 años** para 150 mm en 24 h significa que, en ese píxel, la lluvia máxima de 24 h de una temporada supera 150 mm con probabilidad 1/10. En 26 temporadas se espera unas 2 o 3 veces.\n",
++    "- **Se calcula de dos maneras independientes:**\n",
++    "  1. **Máximos estacionales + GEV.** Se toma la lluvia máxima de cada temporada (26 valores por píxel) y se ajusta una distribución de valores extremos (GEV) por L-momentos. Sirve para T ≥ 2 años.\n",
++    "  2. **Picos independientes + GPD (POT).** Se separan los eventos de lluvia (picos con al menos 48 h entre sí; 96 h para 72 h), se toman los 78 mayores del registro (3 por temporada) y se ajusta una distribución de Pareto generalizada. Da el **intervalo medio R** entre eventos y sirve también por debajo de un año: R = 0.33 años equivale a 3 eventos por temporada.\n",
++    "- **Relación entre las dos:** T = 1 / (1 − e^(−1/R)). Por ejemplo, R = 1 año da T = 1.6 años, y R = 10 años da T ≈ 10.5 años.\n",
++    "\n",
++    "**Entradas.** `data/processed/mswep_v3_return_periods_may_nov.nc`, generado con:\n",
++    "\n",
++    "```bat\n",
++    "conda activate itchi\n",
++    "cd scripts\n",
++    "python periodos_retorno.py        :: ~30 min; lee una vez los 26 años de D:/MSWEP_V316_6H\n",
++    "```\n",
++    "\n",
++    "También usa `mswep_v3_{6,24,72}h_percentiles_may_nov.nc`, para comparar con los percentiles actuales.\n",
++    "\n",
++    "**Salidas.** Figuras en `outputs/figures/periodos_retorno/`."
++   ],
++   "id": "rp-00"
++  },
++  {
++   "cell_type": "markdown",
++   "metadata": {},
++   "source": [
++    "## 0. Configuración"
++   ],
++   "id": "rp-01"
++  },
++  {
++   "cell_type": "code",
++   "metadata": {},
++   "execution_count": null,
++   "outputs": [],
++   "source": [
++    "import sys\n",
++    "from pathlib import Path\n",
++    "\n",
++    "import matplotlib.pyplot as plt\n",
++    "import pandas as pd\n",
++    "import xarray as xr\n",
++    "\n",
++    "from itchi.climatology import quantile_dataarray_to_dict\n",
++    "from itchi.config import get_project_root\n",
++    "\n",
++    "ROOT = get_project_root()\n",
++    "sys.path.insert(0, str(ROOT / \"scripts\"))\n",
++    "import figuras_retorno as F      # noqa: E402\n",
++    "\n",
++    "RP_FILE = ROOT / \"data\" / \"processed\" / \"mswep_v3_return_periods_may_nov.nc\"\n",
++    "PCT_FILE = ROOT / \"data\" / \"processed\" / \"mswep_v3_{d}h_percentiles_may_nov.nc\"\n",
++    "FIG = ROOT / \"outputs\" / \"figures\" / \"periodos_retorno\"\n",
++    "FIG.mkdir(parents=True, exist_ok=True)\n",
++    "assert RP_FILE.exists(), f\"Falta {RP_FILE}: corre primero scripts/periodos_retorno.py\"\n",
++    "\n",
++    "\n",
++    "def guardar(fig, nombre):\n",
++    "    fig.savefig(FIG / f\"{nombre}.png\", dpi=200, bbox_inches=\"tight\")\n",
++    "    plt.show()\n",
++    "\n",
++    "\n",
++    "rp = F.load_rp(RP_FILE)\n",
++    "print(f\"malla {rp.lat.size} x {rp.lon.size} | duraciones {rp.durations} h | temporadas {rp.seasons[0]}-{rp.seasons[-1]}\")\n",
++    "\n",
++    "\n",
++    "def percentiles_en_malla(d):\n",
++    "    with xr.open_dataset(str(PCT_FILE).format(d=d)) as ds:\n",
++    "        q = ds[\"p_wet_raw\"].load()\n",
++    "    q = q.reindex(lat=rp.lat, lon=rp.lon, method=\"nearest\", tolerance=1e-3)\n",
++    "    return {k: v.transpose(\"lat\", \"lon\").values for k, v in quantile_dataarray_to_dict(q).items()\n",
++    "            if k in (\"Q75\", \"Q90\", \"Q95\", \"Q99\")}\n",
++    "\n",
++    "\n",
++    "PCT = {d: percentiles_en_malla(d) for d in rp.durations}"
++   ],
++   "id": "rp-02"
++  },
++  {
++   "cell_type": "markdown",
++   "metadata": {},
++   "source": [
++    "## R1. Cómo leer un periodo de retorno, en seis ciudades\n",
++    "\n",
++    "Cada punto es la lluvia máxima de 24 h de una temporada, ubicada en su periodo de retorno empírico. La línea azul es la GEV y la naranja discontinua es el POT, convertido a periodo anual.\n",
++    "\n",
++    "**Cómo leerla.** Si las dos curvas pasan por los puntos y coinciden entre sí hasta unos 10 años, el resultado es robusto. Más allá de 26 años no hay datos: las curvas son extrapolación y pueden divergir. Las líneas verticales marcan T = 2 y T = 10 años."
++   ],
++   "id": "rp-03"
++  },
++  {
++   "cell_type": "code",
++   "metadata": {},
++   "execution_count": null,
++   "outputs": [],
++   "source": [
++    "for d in rp.durations:\n",
++    "    guardar(F.fig_r1_curva_pixel(rp, duration=d), f\"R1_curva_ciudades_{d}h\")"
++   ],
++   "id": "rp-04"
++  },
++  {
++   "cell_type": "markdown",
++   "metadata": {},
++   "source": [
++    "## R2. Mapas: lluvia con periodo de retorno de 2 y 10 años\n",
++    "\n",
++    "Por duración, la lluvia que se supera en promedio una vez cada 2 años (arriba) y cada 10 años (abajo).\n",
++    "\n",
++    "**Cómo leerla.** Estos son los umbrales absolutos que harían «raro» un evento en cada lugar. La vertiente del Pacífico sur y el Golfo deberían tener niveles mucho mayores que el altiplano y el noroeste. Por eso el peligro se define en periodo de retorno y no en milímetros."
++   ],
++   "id": "rp-05"
++  },
++  {
++   "cell_type": "code",
++   "metadata": {},
++   "execution_count": null,
++   "outputs": [],
++   "source": [
++    "guardar(F.fig_r2_mapas_niveles(rp), \"R2_mapas_niveles\")"
++   ],
++   "id": "rp-06"
++  },
++  {
++   "cell_type": "markdown",
++   "metadata": {},
++   "source": [
++    "## R3. ¿Qué tan raros son los percentiles que usa ITCHI v0.2?\n",
++    "\n",
++    "Para cada píxel, cada cuánto se alcanza su propio P95 y P99 (intervalo medio entre eventos, POT).\n",
++    "\n",
++    "**Cómo leerla.** Si el P95 cae en «< 0.33 años», se alcanza tres o más veces por temporada. Llamarlo «peligro máximo» significaría eso. Esta figura es la base para decidir los umbrales de los niveles en periodo de retorno."
++   ],
++   "id": "rp-07"
++  },
++  {
++   "cell_type": "code",
++   "metadata": {},
++   "execution_count": null,
++   "outputs": [],
++   "source": [
++    "fig, medianas = F.fig_r3_rareza_percentil(rp, PCT)\n",
++    "guardar(fig, \"R3_rareza_percentiles\")"
++   ],
++   "id": "rp-08"
++  },
++  {
++   "cell_type": "markdown",
++   "metadata": {},
++   "source": [
++    "## R4. Consistencia GEV frente a POT\n",
++    "\n",
++    "Nivel de T = 10 años con los dos métodos, píxel por píxel.\n",
++    "\n",
++    "**Cómo leerla.** La nube debe pegarse a la diagonal roja. Si se separa en alguna zona, revisar ahí la forma de la cola (R5) o la separación entre eventos."
++   ],
++   "id": "rp-09"
++  },
++  {
++   "cell_type": "code",
++   "metadata": {},
++   "execution_count": null,
++   "outputs": [],
++   "source": [
++    "guardar(F.fig_r4_consistencia(rp), \"R4_consistencia_gev_pot\")"
++   ],
++   "id": "rp-10"
++  },
++  {
++   "cell_type": "markdown",
++   "metadata": {},
++   "source": [
++    "## R5. Control: forma de la cola\n",
++    "\n",
++    "El parámetro ξ de la GEV y de la GPD. Si ξ > 0, la cola es pesada: los extremos crecen rápido con T.\n",
++    "\n",
++    "**Cómo leerla.** Con 26 temporadas, ξ por píxel es muy incierto. Por eso está acotado entre −0.5 y 0.5. Si muchos píxeles quedan acotados o el mapa es puro ruido, los niveles de 25 años o más no son confiables y conviene un ajuste regional."
++   ],
++   "id": "rp-11"
++  },
++  {
++   "cell_type": "code",
++   "metadata": {},
++   "execution_count": null,
++   "outputs": [],
++   "source": [
++    "guardar(F.fig_r5_forma(rp), \"R5_forma_cola\")"
++   ],
++   "id": "rp-12"
++  },
++  {
++   "cell_type": "markdown",
++   "metadata": {},
++   "source": [
++    "## Resumen en México\n",
++    "\n",
++    "Medianas sobre la caja de México: lluvia con periodo de retorno T e intervalo de recurrencia de los percentiles actuales."
++   ],
++   "id": "rp-13"
++  },
++  {
++   "cell_type": "code",
++   "metadata": {},
++   "execution_count": null,
++   "outputs": [],
++   "source": [
++    "tabla = F.tabla_resumen(rp, PCT)\n",
++    "tabla.to_csv(FIG / \"resumen_periodos_retorno.csv\")\n",
++    "tabla.round(2)"
++   ],
++   "id": "rp-14"
++  },
++  {
++   "cell_type": "markdown",
++   "metadata": {},
++   "source": [
++    "## Siguiente paso\n",
++    "\n",
++    "Con estos parámetros, cualquier lluvia (P6, R24, A72) de cualquier ciclón se convierte en su periodo de retorno con `itchi.return_periods.gev_return_period` y `pot_recurrence_interval`. Ese es el paso 2: el catálogo de estados bajo los ciclones de 2000 a 2025, en malla y por municipio, sobre el que se prueban los esquemas de niveles."
++   ],
++   "id": "rp-15"
++  }
++ ],
++ "metadata": {
++  "kernelspec": {
++   "display_name": "itchi",
++   "language": "python",
++   "name": "python3"
++  },
++  "language_info": {
++   "name": "python",
++   "version": "3.11"
++  }
++ },
++ "nbformat": 4,
++ "nbformat_minor": 5
++}
+\ No newline at end of file
+diff --git a/scripts/figuras_retorno.py b/scripts/figuras_retorno.py
+new file mode 100644
+index 0000000..d432acf
+--- /dev/null
++++ b/scripts/figuras_retorno.py
+@@ -0,0 +1,293 @@
++"""
++ITCHI-CORE · Figuras de los periodos de retorno (notebooks/third test/10_periodos_retorno.ipynb)
++
++    fig_r1_curva_pixel     cómo se lee un periodo de retorno: máximos estacionales,
++                           GEV y POT en ciudades de referencia
++    fig_r2_mapas_niveles   lluvia con periodo de retorno de 2 y 10 años por duración
++    fig_r3_rareza_percentil cada cuánto se alcanza el P95 y el P99 de cada píxel
++    fig_r4_consistencia    GEV contra POT en T = 10 años (deben coincidir)
++    fig_r5_forma           parámetro de forma y píxeles con forma acotada (control)
++
++Las funciones reciben un RP: arreglos NumPy con las mismas dimensiones que el
++archivo de scripts/periodos_retorno.py (load_rp lo lee; from_result lo arma
++desde compute() sin escribir el archivo).
++"""
++
++from __future__ import annotations
++
++import sys
++from dataclasses import dataclass
++from pathlib import Path
++
++import matplotlib.pyplot as plt
++import numpy as np
++from matplotlib.colors import BoundaryNorm, ListedColormap
++
++try:
++    import itchi  # noqa: F401
++except ModuleNotFoundError:
++    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
++
++from itchi.return_periods import (
++    annual_return_period,
++    gev_return_level,
++    pot_recurrence_interval,
++    pot_return_level,
++    recurrence_from_annual,
++)
++
++CIUDADES = {
++    "Acapulco": (16.85, -99.88), "Villahermosa": (17.99, -92.93), "Mérida": (20.97, -89.62),
++    "Monterrey": (25.67, -100.31), "La Paz": (24.14, -110.31), "Ciudad de México": (19.43, -99.13),
++}
++MEXICO_BOX = dict(lat=(14.0, 33.5), lon=(-118.5, -86.0))
++plt.rcParams.update({"figure.dpi": 110, "font.size": 10, "axes.spines.top": False,
++                     "axes.spines.right": False})
++
++
++@dataclass
++class RP:
++    lat: np.ndarray
++    lon: np.ndarray
++    durations: list
++    T: np.ndarray
++    R: np.ndarray
++    seasons: np.ndarray
++    data: dict
++
++    def get(self, var: str, duration: int) -> np.ndarray:
++        return self.data[var][self.durations.index(duration)]
++
++    def pixel(self, lat: float, lon: float) -> tuple[int, int]:
++        return int(np.abs(self.lat - lat).argmin()), int(np.abs(self.lon - lon).argmin())
++
++    def box(self, lat=MEXICO_BOX["lat"], lon=MEXICO_BOX["lon"]) -> tuple[slice, slice]:
++        jj = np.nonzero((self.lat >= lat[0]) & (self.lat <= lat[1]))[0]
++        ii = np.nonzero((self.lon >= lon[0]) & (self.lon <= lon[1]))[0]
++        return slice(jj.min(), jj.max() + 1), slice(ii.min(), ii.max() + 1)
++
++
++VARS = ("seasonal_max", "n_seasons", "gev_xi", "gev_sigma", "gev_mu", "gev_xi_clipped", "gpd_u",
++        "gpd_sigma", "gpd_xi", "gpd_rate", "gpd_xi_clipped", "rl_gev", "rl_pot", "rl_pot_emp")
++
++
++def load_rp(path) -> RP:
++    import xarray as xr
++
++    with xr.open_dataset(path) as ds:
++        lat = ds["lat"].values
++        order = np.argsort(lat)
++        data = {v: ds[v].values[..., order, :] for v in VARS if v in ds}
++        if "peaks" in ds:
++            data["peaks"] = ds["peaks"].values[..., order, :]
++        return RP(lat[order], ds["lon"].values, [int(d) for d in ds["duration"].values],
++                  ds["T"].values, ds["R"].values, ds["season"].values, data)
++
++
++def from_result(res: dict, cfg) -> RP:
++    st, durs = res["state"], list(cfg.durations)
++    f = res["fits"]
++    data = {"seasonal_max": np.stack([st["am"][d] for d in durs]),
++            "peaks": np.stack([st["top"][d] for d in durs]),
++            "n_seasons": np.stack([f[d]["n_seasons"] for d in durs])}
++    for fam, keys in (("gev", ("xi", "sigma", "mu", "xi_clipped")), ("gpd", ("u", "sigma", "xi", "rate", "xi_clipped"))):
++        for k in keys:
++            data[f"{fam}_{k}"] = np.stack([f[d][fam][k] for d in durs]).astype(float)
++    for k in ("rl_gev", "rl_pot", "rl_pot_emp"):
++        data[k] = np.stack([f[d][k] for d in durs])
++    lat = np.asarray(st["lat"])
++    order = np.argsort(lat)
++    data = {k: v[..., order, :] for k, v in data.items()}
++    return RP(lat[order], np.asarray(st["lon"]), durs, np.asarray(cfg.T_gev), np.asarray(cfg.R_pot),
++              np.asarray(res["years"]), data)
++
++
++# ============================================================================
++# MAPAS
++# ============================================================================
++
++
++def _map_axes(nrows: int, ncols: int, figsize):
++    try:
++        import cartopy.crs as ccrs
++        import cartopy.feature as cfeature
++        fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False,
++                                 subplot_kw={"projection": ccrs.PlateCarree()})
++        for ax in axes.flat:
++            ax.add_feature(cfeature.COASTLINE.with_scale("50m"), lw=0.6)
++            ax.add_feature(cfeature.BORDERS.with_scale("50m"), lw=0.4, edgecolor="0.3")
++        kw = {"transform": ccrs.PlateCarree()}
++    except ImportError:
++        fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
++        kw = {}
++    return fig, axes, kw
++
++
++def _draw(ax, rp: RP, field: np.ndarray, kw: dict, box=True, **pkw):
++    js, is_ = rp.box() if box else (slice(None), slice(None))
++    m = ax.pcolormesh(rp.lon[is_], rp.lat[js], field[js, is_], shading="auto", **kw, **pkw)
++    for name, (la, lo) in CIUDADES.items():
++        ax.plot(lo, la, "k.", ms=3, **kw)
++    ax.set_xlim(rp.lon[is_][[0, -1]])
++    ax.set_ylim(rp.lat[js][[0, -1]])
++    return m
++
++
++def fig_r2_mapas_niveles(rp: RP, T_show=(2.0, 10.0)):
++    """Lluvia (mm) con periodo de retorno T, por duración (GEV)."""
++
++    durs = rp.durations
++    fig, axes, kw = _map_axes(len(T_show), len(durs), (5.2 * len(durs), 3.6 * len(T_show)))
++    for j, d in enumerate(durs):
++        rl = rp.get("rl_gev", d)
++        vmax = np.nanpercentile(rl[list(rp.T).index(max(T_show))][rp.box()], 98)
++        for i, T in enumerate(T_show):
++            m = _draw(axes[i, j], rp, rl[list(rp.T).index(T)], kw, cmap="YlGnBu", vmin=0, vmax=vmax)
++            axes[i, j].set_title(f"R{d}: lluvia de periodo de retorno {T:g} años", fontsize=10)
++        fig.colorbar(m, ax=axes[:, j], shrink=0.8, label=f"mm en {d} h")
++    fig.suptitle("Lluvia que se supera en promedio una vez cada T años (máximos de mayo a noviembre, GEV)",
++                 y=1.0)
++    return fig
++
++
++def fig_r3_rareza_percentil(rp: RP, percentiles: dict, labels=("Q95", "Q99")):
++    """
++    Intervalo de recurrencia (años) de los percentiles actuales de cada píxel.
++
++    percentiles: {duración: {"Q95": campo (lat, lon), ...}} en la malla de rp.
++    """
++
++    bounds = [0.0, 0.34, 0.5, 1.0, 2.0, 5.0, 10.0, 1e9]
++    names = ["< 0.33 (≥ 3 por temporada)", "0.33–0.5", "0.5–1", "1–2", "2–5", "5–10", "> 10 años"]
++    cmap = ListedColormap(["#F7FBFF", "#C6DBEF", "#9ECAE1", "#FDD49E", "#FC8D59", "#D7301F", "#7F0000"])
++    norm = BoundaryNorm(bounds, cmap.N)
++    durs = [d for d in rp.durations if d in percentiles]
++    fig, axes, kw = _map_axes(len(labels), len(durs), (5.2 * len(durs), 3.6 * len(labels)))
++    stats = {}
++    for j, d in enumerate(durs):
++        u, s, xi, rate = (rp.get(f"gpd_{k}", d) for k in ("u", "sigma", "xi", "rate"))
++        for i, q in enumerate(labels):
++            x = percentiles[d][q]
++            Rq = pot_recurrence_interval(x, u, s, xi, rate)
++            Rq = np.where(np.isfinite(x) & np.isfinite(u) & (x < u), 0.1, Rq)   # más frecuente que el umbral
++            m = _draw(axes[i, j], rp, Rq, kw, cmap=cmap, norm=norm)
++            axes[i, j].set_title(f"{q.replace('Q', 'P')} de {d} h: ¿cada cuánto se alcanza?", fontsize=10)
++            box = Rq[rp.box()]
++            stats[(d, q)] = np.nanmedian(box)
++    cb = fig.colorbar(m, ax=axes, shrink=0.8, ticks=[(a + b) / 2 for a, b in zip(bounds[:-2], bounds[1:-1])] + [11])
++    cb.ax.set_yticklabels(names)
++    cb.set_label("intervalo medio entre eventos (años)")
++    fig.suptitle("Rareza real de los percentiles que usa ITCHI v0.2 (mediana en México: "
++                 + ", ".join(f"{q.replace('Q', 'P')}-{d} h {v:.2f} años" for (d, q), v in stats.items()) + ")",
++                 y=1.0, fontsize=10)
++    return fig, stats
++
++
++def fig_r4_consistencia(rp: RP, T: float = 10.0):
++    """GEV contra POT para el mismo periodo de retorno anual T."""
++
++    durs = rp.durations
++    fig, axes = plt.subplots(1, len(durs), figsize=(4.8 * len(durs), 4.2), squeeze=False)
++    Rt = float(recurrence_from_annual(T))
++    for ax, d in zip(axes[0], durs, strict=True):
++        g = gev_return_level(T, rp.get("gev_xi", d), rp.get("gev_sigma", d), rp.get("gev_mu", d))[rp.box()]
++        p = pot_return_level(Rt, *(rp.get(f"gpd_{k}", d) for k in ("u", "sigma", "xi", "rate")))[rp.box()]
++        ok = np.isfinite(g) & np.isfinite(p)
++        ax.hexbin(g[ok], p[ok], gridsize=60, bins="log", cmap="Greys", mincnt=1)
++        hi = np.nanpercentile(np.r_[g[ok], p[ok]], 99.5) if ok.any() else 1.0
++        ax.plot([0, hi], [0, hi], "r-", lw=1)
++        rel = np.nanmedian(np.abs(p[ok] - g[ok]) / g[ok]) if ok.any() else np.nan
++        ax.set(xlim=(0, hi), ylim=(0, hi), xlabel=f"GEV (máximos estacionales), mm en {d} h",
++               ylabel="POT (picos independientes), mm", title=f"R{d}, T = {T:g} años · diferencia mediana {rel:.0%}")
++    fig.suptitle("Dos estimadores independientes del mismo nivel: si coinciden, el resultado es robusto", y=1.03)
++    fig.tight_layout()
++    return fig
++
++
++def fig_r5_forma(rp: RP):
++    """Parámetro de forma (GEV y GPD) y fracción de píxeles con forma acotada."""
++
++    durs = rp.durations
++    fig, axes, kw = _map_axes(2, len(durs), (5.2 * len(durs), 7.2))
++    for j, d in enumerate(durs):
++        for i, fam in enumerate(("gev", "gpd")):
++            xi = rp.get(f"{fam}_xi", d)
++            m = _draw(axes[i, j], rp, xi, kw, cmap="RdBu_r", vmin=-0.5, vmax=0.5)
++            clip = np.nanmean(rp.get(f"{fam}_xi_clipped", d)[rp.box()])
++            axes[i, j].set_title(f"{fam.upper()} ξ, R{d} · acotada en {clip:.1%} de los píxeles", fontsize=10)
++    fig.colorbar(m, ax=axes, shrink=0.8, label="ξ (> 0: cola pesada)")
++    fig.suptitle("Control: forma de la cola. Con 26 temporadas ξ es muy incierto por píxel", y=1.0)
++    return fig
++
++
++# ============================================================================
++# CURVA EN UN PÍXEL
++# ============================================================================
++
++
++def fig_r1_curva_pixel(rp: RP, ciudades=CIUDADES, duration: int = 24):
++    """Máximos estacionales (puntos), GEV (línea) y POT (discontinua) en ciudades."""
++
++    names = list(ciudades)
++    ncol = 3
++    nrow = int(np.ceil(len(names) / ncol))
++    fig, axes = plt.subplots(nrow, ncol, figsize=(5 * ncol, 3.8 * nrow), squeeze=False)
++    Tgrid = np.geomspace(1.05, 100.0, 200)
++    for ax, name in zip(axes.flat, names, strict=False):
++        j, i = rp.pixel(*ciudades[name])
++        am = rp.get("seasonal_max", duration)[:, j, i]
++        am = np.sort(am[np.isfinite(am)])[::-1]
++        n = am.size
++        if n:
++            m = np.arange(1, n + 1)
++            T_emp = (n + 0.12) / (m - 0.44)                       # Gringorten
++            ax.plot(T_emp, am, "o", color="#2A6FC9", ms=4, label=f"máximos estacionales ({n})")
++        xi, s, mu = (rp.get(f"gev_{k}", duration)[j, i] for k in ("xi", "sigma", "mu"))
++        ax.plot(Tgrid, gev_return_level(Tgrid, xi, s, mu), "-", color="#2A6FC9", lw=2, label="GEV")
++        gp = [rp.get(f"gpd_{k}", duration)[j, i] for k in ("u", "sigma", "xi", "rate")]
++        Rgrid = np.geomspace(1.0 / max(gp[3], 1e-9) if np.isfinite(gp[3]) else 0.3, 100.0, 200)
++        ax.plot(annual_return_period(Rgrid), pot_return_level(Rgrid, *gp), "--", color="#D9822B", lw=2,
++                label="POT (picos independientes)")
++        for T, ls in ((2, ":"), (10, ":")):
++            ax.axvline(T, color="0.7", lw=0.8, ls=ls)
++        ax.set_xscale("log")
++        ax.set_xticks([1, 2, 5, 10, 25, 50, 100], ["1", "2", "5", "10", "25", "50", "100"])
++        ax.set(title=f"{name} ({rp.lat[j]:.1f}°, {rp.lon[i]:.1f}°)", xlabel="periodo de retorno T (años)",
++               ylabel=f"lluvia en {duration} h (mm)", xlim=(1, 100))
++    for ax in axes.flat[len(names):]:
++        ax.set_visible(False)
++    axes.flat[0].legend(frameon=False, fontsize=8, loc="upper left")
++    fig.suptitle(f"Cómo leer un periodo de retorno: la lluvia de {duration} h que se espera una vez cada T años",
++                 y=1.01)
++    fig.tight_layout()
++    return fig
++
++
++# ============================================================================
++# TABLA RESUMEN
++# ============================================================================
++
++
++def tabla_resumen(rp: RP, percentiles: dict | None = None, T_show=(2.0, 5.0, 10.0, 25.0)):
++    """
++    Medianas sobre México: lluvia con periodo de retorno T (GEV) y, si se dan
++    los percentiles, el intervalo de recurrencia de cada uno (POT, años).
++    """
++    import pandas as pd
++
++    rows = []
++    box = rp.box()
++    for d in rp.durations:
++        r = {"duración (h)": d}
++        rl = rp.get("rl_gev", d)
++        for T in T_show:
++            r[f"T = {T:g} años (mm)"] = float(np.nanmedian(rl[list(rp.T).index(T)][box]))
++        if percentiles and d in percentiles:
++            u, s, xi, rate = (rp.get(f"gpd_{k}", d) for k in ("u", "sigma", "xi", "rate"))
++            for q, x in percentiles[d].items():
++                Rq = pot_recurrence_interval(x, u, s, xi, rate)
++                below = np.isfinite(x) & np.isfinite(u) & (x < u)
++                med = float(np.nanmedian(np.where(below, 0.0, Rq)[box]))
++                r[f"{q.replace('Q', 'P')}: cada (años)"] = med if med > 0 else f"< {1 / np.nanmedian(rate[box]):.2f}"
++        rows.append(r)
++    return pd.DataFrame(rows).set_index("duración (h)")
+diff --git a/scripts/periodos_retorno.py b/scripts/periodos_retorno.py
+new file mode 100644
+index 0000000..c9c9440
+--- /dev/null
++++ b/scripts/periodos_retorno.py
+@@ -0,0 +1,326 @@
++"""
++ITCHI-CORE · Periodos de retorno de la lluvia (climatología de rareza, paso 1)
++
++Para cada píxel y duración d (6, 24, 72 h) de los acumulados de 6 h MSWEP V3
++(mayo–noviembre, 2000–2025, todas las causas de lluvia, no solo ciclones):
++
++    1. Máximos estacionales M_y = max R_d en la temporada y -> GEV por L-momentos.
++       T(x) = periodo de retorno en años (probabilidad 1/T de superarse en una temporada).
++    2. Picos independientes (eventos separados por al menos separacion_h) -> los
++       K = picos_por_temporada x n_temporadas mayores -> GPD sobre el (K+1)-ésimo.
++       R(x) = intervalo medio de recurrencia en años; sirve también por debajo de
++       un año (R = 0.33: tres eventos por temporada).
++
++    R_d(T) = suma de los acumulados de 6 h en (T-d, T], dentro de cada temporada
++    (cada archivo anual es una temporada; no cruza dic -> may).
++
++Productos (data/processed/mswep_v3_return_periods_may_nov.nc):
++
++    seasonal_max      (duration, season, lat, lon)   máximos estacionales
++    peaks             (duration, rank, lat, lon)     K+1 picos mayores (opcional)
++    n_seasons         (duration, lat, lon)           temporadas válidas
++    gev_xi, gev_sigma, gev_mu, gev_xi_clipped
++    gpd_u, gpd_sigma, gpd_xi, gpd_rate, gpd_xi_clipped
++    rl_gev            (duration, T, lat, lon)        nivel con periodo de retorno T (GEV)
++    rl_pot            (duration, R, lat, lon)        nivel con recurrencia R (GPD)
++    rl_pot_emp        (duration, R, lat, lon)        idem, empírico (rango de los picos)
++
++Uso posterior: itchi.return_periods.gev_return_period / pot_recurrence_interval
++convierten cualquier lluvia en su periodo de retorno con estos parámetros.
++
++Ejecutar desde scripts/ (Anaconda Prompt, entorno itchi):
++    python periodos_retorno.py
++    python periodos_retorno.py --durations 24 --sin-picos
++"""
++
++from __future__ import annotations
++
++import argparse
++import os
++import re
++import sys
++import time
++from collections.abc import Callable
++from dataclasses import dataclass, field
++from pathlib import Path
++
++import numpy as np
++
++try:
++    import itchi  # noqa: F401
++except ModuleNotFoundError:   # paquete no instalado: usar src/ del repo
++    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
++
++from itchi.return_periods import (
++    declustered_peaks,
++    empirical_pot_level,
++    fit_gev_lmoments,
++    fit_gpd_top_k,
++    gev_return_level,
++    pot_return_level,
++    running_sum,
++    seasonal_maximum,
++    update_top_k,
++)
++
++REPO = Path(__file__).resolve().parents[1]
++
++
++@dataclass
++class ConfigRP:
++
++    directory: str = "D:/MSWEP_V316_6H"
++    pattern: str = "mswep_v3_6h_{year}.nc"
++    variable: str = "precipitation"
++    start_year: int = 2000
++    end_year: int = 2025
++
++    durations: tuple = (6, 24, 72)
++    # Separación mínima entre picos independientes (h): mayor que la duración y
++    # que la vida típica de un sistema de lluvia sobre un punto
++    separacion_h: dict = field(default_factory=lambda: {6: 48, 24: 48, 72: 96})
++    wet: float = 1.0                     # mm por ventana: un pico debe ser lluvia
++    picos_por_temporada: float = 3.0     # K = 3 x n_temporadas (umbral GPD ~ P95-P99 de 6 h)
++    min_valid_fraction: float = 0.9      # temporada válida si >= 90 % de pasos válidos
++    min_temporadas: int = 15             # GEV
++    min_excesos: int = 20                # GPD
++    xi_bounds: tuple = (-0.5, 0.5)
++
++    T_gev: tuple = (2.0, 5.0, 10.0, 25.0, 50.0, 100.0)
++    R_pot: tuple = (0.25, 1.0 / 3.0, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0)
++
++    filas_por_banda: int = 30            # memoria: filas de latitud procesadas a la vez
++    guardar_picos: bool = True
++    out_file: str = str(REPO / "data/processed/mswep_v3_return_periods_may_nov.nc")
++
++    @property
++    def years(self) -> list[int]:
++        return list(range(self.start_year, self.end_year + 1))
++
++    @property
++    def k(self) -> int:
++        return int(round(self.picos_por_temporada * len(self.years)))
++
++
++def local_path(path: str | Path) -> Path:
++    """'D:/...' -> '/mnt/d/...' en WSL/Linux; sin cambios en Windows."""
++    s = str(path).replace("\\", "/")
++    if os.name != "nt" and re.match(r"^[A-Za-z]:/", s):
++        return Path(f"/mnt/{s[0].lower()}") / s[3:]
++    return Path(s)
++
++
++# ============================================================================
++# LECTURA
++# ============================================================================
++
++
++def read_year_xarray(cfg: ConfigRP) -> Callable[[int], tuple]:
++    """Lector de un año: (tiempos, lat, lon, P6 (time, lat, lon) float32)."""
++
++    import xarray as xr
++
++    def read(year: int):
++        path = local_path(cfg.directory) / cfg.pattern.format(year=year)
++        if not path.exists():
++            return None
++        with xr.open_dataset(path) as ds:
++            da = ds[cfg.variable].transpose("time", "lat", "lon")
++            return (da["time"].values, da["lat"].values, da["lon"].values,
++                    da.values.astype(np.float32))
++
++    return read
++
++
++def contiguous(times: np.ndarray, values: np.ndarray) -> np.ndarray:
++    """Coloca los pasos en una malla de 6 h sin huecos (pasos faltantes = NaN)."""
++
++    t = times.astype("datetime64[h]").astype(np.int64)
++    pos = (t - t[0]) // 6
++    if np.any((t - t[0]) % 6) or np.any(np.diff(pos) <= 0):
++        raise ValueError("Los tiempos no son múltiplos crecientes de 6 h.")
++    if pos[-1] + 1 == len(pos):
++        return values
++    out = np.full((int(pos[-1]) + 1,) + values.shape[1:], np.nan, dtype=values.dtype)
++    out[pos] = values
++    return out
++
++
++# ============================================================================
++# CÁLCULO
++# ============================================================================
++
++
++def compute(cfg: ConfigRP, read: Callable[[int], tuple | None], verbose: bool = True) -> dict:
++    """
++    Recorre las temporadas una vez y acumula, por duración, los máximos
++    estacionales y los K+1 picos independientes mayores de cada píxel.
++    """
++
++    years = cfg.years
++    k1 = cfg.k + 1
++    state = None
++    leidos = []
++    t0 = time.time()
++
++    for iy, year in enumerate(years):
++        rec = read(year)
++        if rec is None:
++            print(f"  {year}: sin archivo, se omite")
++            continue
++        times, lat, lon, p6 = rec
++        p6 = contiguous(np.asarray(times), p6)
++        ny, nx = p6.shape[1:]
++        if state is None:
++            state = {
++                "lat": lat, "lon": lon,
++                "am": {d: np.full((len(years), ny, nx), np.nan, np.float32) for d in cfg.durations},
++                "top": {d: np.full((k1, ny, nx), np.nan, np.float32) for d in cfg.durations},
++            }
++        elif (ny, nx) != state["am"][cfg.durations[0]].shape[1:]:
++            raise ValueError(f"{year}: la malla no coincide con la de los años anteriores.")
++
++        for j0 in range(0, ny, cfg.filas_por_banda):
++            band = slice(j0, min(j0 + cfg.filas_por_banda, ny))
++            x6 = p6[:, band].astype(float)
++            for d in cfg.durations:
++                r = running_sum(x6, d // 6)
++                state["am"][d][iy, band] = seasonal_maximum(r, cfg.min_valid_fraction)
++                peaks = declustered_peaks(r, cfg.separacion_h[d] // 6, cfg.wet)
++                state["top"][d][:, band] = update_top_k(state["top"][d][:, band], peaks, k1)
++        leidos.append(year)
++        if verbose:
++            print(f"  {year}: {p6.shape[0]} pasos · {(time.time() - t0) / 60:.1f} min")
++
++    if state is None:
++        raise FileNotFoundError(
++            f"No se leyó ninguna temporada en {local_path(cfg.directory)} ({cfg.pattern}).")
++
++    fits = {}
++    for d in cfg.durations:
++        am = state["am"][d]
++        n_seasons = np.isfinite(am).sum(axis=0)
++        gev = fit_gev_lmoments(am, min_n=cfg.min_temporadas, xi_bounds=cfg.xi_bounds)
++        gpd = fit_gpd_top_k(state["top"][d], np.maximum(n_seasons, 1), xi_bounds=cfg.xi_bounds,
++                            min_excesses=cfg.min_excesos)
++        T = np.asarray(cfg.T_gev).reshape(-1, 1, 1)
++        R = np.asarray(cfg.R_pot).reshape(-1, 1, 1)
++        fits[d] = {
++            "n_seasons": n_seasons, "gev": gev, "gpd": gpd,
++            "rl_gev": gev_return_level(T, gev["xi"], gev["sigma"], gev["mu"]),
++            "rl_pot": pot_return_level(R, gpd["u"], gpd["sigma"], gpd["xi"], gpd["rate"]),
++            "rl_pot_emp": empirical_pot_level(state["top"][d][:-1], float(np.median(n_seasons)),
++                                              cfg.R_pot),
++        }
++    return {"state": state, "fits": fits, "years": years, "leidos": leidos}
++
++
++# ============================================================================
++# SALIDA
++# ============================================================================
++
++
++def to_dataset(res: dict, cfg: ConfigRP):
++    import xarray as xr
++
++    st, durs = res["state"], list(cfg.durations)
++    lat, lon = st["lat"], st["lon"]
++    sp = ("lat", "lon")
++
++    def stack(fn) -> np.ndarray:
++        return np.stack([fn(d) for d in durs]).astype(np.float32)
++
++    ds = xr.Dataset(coords={"duration": ("duration", durs), "lat": lat, "lon": lon,
++                            "season": ("season", res["years"]),
++                            "T": ("T", list(cfg.T_gev)), "R": ("R", list(cfg.R_pot))})
++    ds["seasonal_max"] = (("duration", "season") + sp, stack(lambda d: st["am"][d]))
++    if cfg.guardar_picos:
++        ds = ds.assign_coords(rank=("rank", np.arange(1, cfg.k + 2)))
++        ds["peaks"] = (("duration", "rank") + sp, stack(lambda d: st["top"][d]))
++    ds["n_seasons"] = (("duration",) + sp, stack(lambda d: res["fits"][d]["n_seasons"]).astype(np.int16))
++    for fam in ("gev", "gpd"):
++        keys = ("xi", "sigma", "mu") if fam == "gev" else ("u", "sigma", "xi", "rate")
++        for key in keys:
++            ds[f"{fam}_{key}"] = (("duration",) + sp, stack(lambda d, f=fam, k=key: res["fits"][d][f][k]))
++        ds[f"{fam}_xi_clipped"] = (("duration",) + sp,
++                                   stack(lambda d, f=fam: res["fits"][d][f]["xi_clipped"]).astype(np.int8))
++    ds["rl_gev"] = (("duration", "T") + sp, stack(lambda d: res["fits"][d]["rl_gev"]))
++    ds["rl_pot"] = (("duration", "R") + sp, stack(lambda d: res["fits"][d]["rl_pot"]))
++    ds["rl_pot_emp"] = (("duration", "R") + sp, stack(lambda d: res["fits"][d]["rl_pot_emp"]))
++
++    mm = "mm per accumulation window of `duration` hours"
++    attrs = {
++        "duration": dict(units="h", long_name="accumulation length d: R_d(T) = precipitation in (T-d, T]"),
++        "T": dict(units="year", long_name="return period of the seasonal maximum (GEV)"),
++        "R": dict(units="year", long_name="mean recurrence interval of independent events (POT)"),
++        "seasonal_max": dict(units=mm, long_name="May-November maximum of R_d"),
++        "n_seasons": dict(units="1", long_name="seasons with >= min_valid_fraction valid steps"),
++        "gev_xi": dict(units="1", long_name="GEV shape (Coles sign: > 0 heavy tail), L-moments"),
++        "gev_sigma": dict(units=mm, long_name="GEV scale"),
++        "gev_mu": dict(units=mm, long_name="GEV location"),
++        "gpd_u": dict(units=mm, long_name="POT threshold: (K+1)-th largest independent peak"),
++        "gpd_sigma": dict(units=mm, long_name="GPD scale of the excesses over gpd_u"),
++        "gpd_xi": dict(units="1", long_name="GPD shape (Coles sign), L-moments"),
++        "gpd_rate": dict(units="events per season", long_name="independent events above gpd_u"),
++        "rl_gev": dict(units=mm, long_name="return level of the seasonal maximum for return period T"),
++        "rl_pot": dict(units=mm, long_name="value reached once every R years on average (GPD)"),
++        "rl_pot_emp": dict(units=mm, long_name="same, empirical (rank R^-1 x n_seasons of the peaks)"),
++    }
++    if cfg.guardar_picos:
++        attrs["peaks"] = dict(units=mm, long_name="largest independent peaks of R_d, descending")
++    for name, a in attrs.items():
++        ds[name].attrs.update(a)
++    ds.attrs.update(
++        framework="ITCHI-CORE",
++        title="Return periods of MSWEP V3 precipitation, May-November",
++        source="MSWEP V3 6-h accumulations (scripts/mswep_v3_6h_accum.py)",
++        period=f"{cfg.start_year}-{cfg.end_year}",
++        seasons_read=",".join(map(str, res["leidos"])),
++        causes="all rainfall (not only tropical cyclones)",
++        peak_separation_h=",".join(f"{d}:{cfg.separacion_h[d]}" for d in durs),
++        peak_min_mm=cfg.wet,
++        peaks_per_season_K=cfg.picos_por_temporada,
++        xi_bounds=str(cfg.xi_bounds),
++        estimators="GEV and GPD by L-moments (Hosking 1990; Hosking and Wallis 1987)",
++        conversion="T = 1 / (1 - exp(-1/R)) for Poisson events",
++        code="scripts/periodos_retorno.py, itchi.return_periods",
++    )
++    return ds
++
++
++def write(ds, cfg: ConfigRP) -> None:
++    os.makedirs(os.path.dirname(os.path.abspath(cfg.out_file)), exist_ok=True)
++    enc = {v: {"zlib": True, "complevel": 4} for v in ds.data_vars}
++    ds.to_netcdf(cfg.out_file, encoding=enc)
++
++
++def run(cfg: ConfigRP = ConfigRP()):
++    t0 = time.time()
++    print("\n" + "=" * 75)
++    print("ITCHI-CORE · Periodos de retorno de la lluvia (MSWEP V3, mayo-noviembre)")
++    print("=" * 75)
++    print(f"durations {cfg.durations} h · temporadas {cfg.start_year}-{cfg.end_year} · "
++          f"K = {cfg.k} picos por píxel · {local_path(cfg.directory)}")
++    res = compute(cfg, read_year_xarray(cfg))
++    ds = to_dataset(res, cfg)
++    write(ds, cfg)
++    for d in cfg.durations:
++        f = res["fits"][d]
++        print(f"  {d:>2} h: GEV válido en {np.isfinite(f['gev']['xi']).mean():.1%} de los píxeles, "
++              f"forma acotada en {f['gev']['xi_clipped'].mean():.1%}; "
++              f"GPD válido en {np.isfinite(f['gpd']['xi']).mean():.1%}")
++    print(f"\nPROCESO TERMINADO · {(time.time() - t0) / 60:.1f} min · {cfg.out_file}")
++    return ds
++
++
++if __name__ == "__main__":
++    ap = argparse.ArgumentParser(description="Periodos de retorno de la lluvia MSWEP V3")
++    ap.add_argument("--durations", type=int, nargs="+", default=list(ConfigRP.durations))
++    ap.add_argument("--filas-por-banda", type=int, default=ConfigRP.filas_por_banda,
++                    help="baja este número si falta memoria")
++    ap.add_argument("--sin-picos", action="store_true", help="no guarda los picos (archivo menor)")
++    ap.add_argument("--out", default=ConfigRP.out_file)
++    a = ap.parse_args()
++    run(ConfigRP(durations=tuple(a.durations), filas_por_banda=a.filas_por_banda,
++                 guardar_picos=not a.sin_picos, out_file=a.out))
++
+diff --git a/src/itchi/return_periods.py b/src/itchi/return_periods.py
+new file mode 100644
+index 0000000..cbb9db5
+--- /dev/null
++++ b/src/itchi/return_periods.py
+@@ -0,0 +1,400 @@
++"""
++Return periods of precipitation for ITCHI (climatology of rainfall rarity).
++
++The hazard of a rainfall amount is expressed as how often it is reached at the
++same pixel, not as a percentile of wet windows. Two estimators per pixel and
++duration d (6, 24, 72 h):
++
++1. Annual (seasonal) maxima + GEV (block maxima)
++   M_y = max of R_d in season y (May-November). T(x) = 1 / P(M > x): the
++   return period in years. Reliable for T >= 2 years; with 26 seasons the
++   empirical estimate is usable up to ~10 years and the GEV extrapolates.
++
++2. Declustered peaks over threshold + GPD (POT)
++   Independent events: peaks of R_d separated by at least ``min_separation``
++   steps. The K largest peaks of the record define the threshold u (the
++   (K+1)-th peak) and the excesses are fitted with a generalized Pareto
++   distribution. lambda(x) = mean number of events per season with peak >= x;
++   R(x) = 1 / lambda(x) is the mean recurrence interval in years, valid also
++   below one year (e.g. R = 0.33 years: three events per season).
++
++   For a Poisson number of events, the two scales are related by
++   T = 1 / (1 - exp(-1 / R)) (annual_return_period).
++
++Conventions
++-----------
++- Arrays have time (or sample) on axis 0 and any number of trailing pixel axes.
++- Shape parameter xi follows Coles (2001): xi > 0 heavy tail, xi < 0 bounded.
++  Hosking's k = -xi is used internally by the L-moment estimators.
++- Pure NumPy (no SciPy, no xarray) so it runs inside dask blocks and in tests.
++
++References
++----------
++Coles, S. (2001). An Introduction to Statistical Modeling of Extreme Values.
++    Springer. https://doi.org/10.1007/978-1-4471-3675-0
++Hosking, J. R. M. (1990). L-moments: analysis and estimation of distributions
++    using linear combinations of order statistics. J. R. Stat. Soc. B, 52(1),
++    105-124. https://doi.org/10.1111/j.2517-6161.1990.tb01775.x
++Hosking, J. R. M. and Wallis, J. R. (1987). Parameter and quantile estimation
++    for the generalized Pareto distribution. Technometrics, 29(3), 339-349.
++    https://doi.org/10.1080/00401706.1987.10488243
++"""
++
++from __future__ import annotations
++
++import math
++from collections.abc import Sequence
++
++import numpy as np
++
++EULER_GAMMA: float = 0.5772156649015329
++_gamma = np.vectorize(math.gamma, otypes=[float])
++
++
++# ============================================================
++# Series operations (axis 0 = time, contiguous 6-h steps)
++# ============================================================
++
++
++def running_sum(x: np.ndarray, n: int) -> np.ndarray:
++    """
++    R(t) = x(t) + x(t-1) + ... + x(t-n+1) along axis 0.
++
++    NaN if any of the n steps is NaN or if t < n - 1 (start of the series).
++    """
++    x = np.asarray(x, dtype=float)
++    if n < 1:
++        raise ValueError(f"n must be >= 1: {n}")
++    if n == 1:
++        return x.copy()
++    out = np.full_like(x, np.nan)
++    if x.shape[0] >= n:
++        acc = x[n - 1:].copy()
++        for k in range(1, n):
++            acc += x[n - 1 - k:x.shape[0] - k]
++        out[n - 1:] = acc
++    return out
++
++
++def declustered_peaks(x: np.ndarray, min_separation: int, threshold: float = 1.0) -> np.ndarray:
++    """
++    Independent event peaks along axis 0.
++
++    A step t is a peak if x(t) >= threshold and x(t) is the largest value in
++    [t - min_separation, t + min_separation]; on ties the first occurrence
++    wins. Two peaks are therefore at least min_separation + 1 steps apart.
++
++    Parameters
++    ----------
++    x : numpy.ndarray
++        Series (time, ...) of one season; NaN = missing.
++    min_separation : int
++        Half-width of the window in steps (e.g. 8 steps = 48 h for 6-h data).
++    threshold : float, default=1.0
++        Minimum peak value (wet window).
++
++    Returns
++    -------
++    numpy.ndarray
++        Same shape as x: the peak value at peaks, NaN elsewhere.
++    """
++    x = np.asarray(x, dtype=float)
++    v = np.where(np.isfinite(x), x, -np.inf)
++    nt = v.shape[0]
++    before = np.full_like(v, -np.inf)       # max over [t-s, t-1]
++    after = np.full_like(v, -np.inf)        # max over [t+1, t+s]
++    for s in range(1, min(min_separation, nt - 1) + 1):
++        before[s:] = np.maximum(before[s:], v[:nt - s])
++        after[:nt - s] = np.maximum(after[:nt - s], v[s:])
++    peak = np.isfinite(x) & (x >= threshold) & (v > before) & (v >= after)
++    return np.where(peak, x, np.nan)
++
++
++def update_top_k(top: np.ndarray | None, candidates: np.ndarray, k: int) -> np.ndarray:
++    """
++    Keep the k largest values along axis 0, sorted in descending order.
++
++    NaN means "no value"; the result is NaN-padded where fewer than k values
++    exist.
++    """
++    c = np.asarray(candidates, dtype=float)
++    pool = c if top is None else np.concatenate([np.asarray(top, dtype=float), c], axis=0)
++    filled = np.where(np.isfinite(pool), pool, -np.inf)
++    if filled.shape[0] > k:
++        filled = -np.partition(-filled, k - 1, axis=0)[:k]
++    filled = -np.sort(-filled, axis=0)
++    if filled.shape[0] < k:
++        pad = np.full((k - filled.shape[0],) + filled.shape[1:], -np.inf)
++        filled = np.concatenate([filled, pad], axis=0)
++    return np.where(np.isfinite(filled), filled, np.nan)
++
++
++def seasonal_maximum(x: np.ndarray, min_valid_fraction: float = 0.9) -> np.ndarray:
++    """
++    Maximum along axis 0; NaN if less than min_valid_fraction of the steps
++    are valid (a truncated season would bias the maximum low).
++    """
++    x = np.asarray(x, dtype=float)
++    valid = np.isfinite(x).mean(axis=0)
++    with np.errstate(invalid="ignore"):
++        m = np.max(np.where(np.isfinite(x), x, -np.inf), axis=0)
++    return np.where((valid >= min_valid_fraction) & np.isfinite(m), m, np.nan)
++
++
++# ============================================================
++# Sample L-moments (NaN-aware, axis 0)
++# ============================================================
++
++
++def sample_lmoments(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
++    """
++    Unbiased sample L-moments l1, l2, l3 and sample size n along axis 0.
++
++    Uses the probability-weighted moments b0, b1, b2 of the ascending order
++    statistics (Hosking, 1990); NaN values are ignored pixel by pixel.
++    """
++    x = np.asarray(x, dtype=float)
++    s = np.sort(x, axis=0)                       # NaN last
++    n = np.isfinite(x).sum(axis=0).astype(float)
++    i = np.arange(1, x.shape[0] + 1, dtype=float).reshape((-1,) + (1,) * (x.ndim - 1))
++    ok = i <= n
++    xs = np.where(ok, s, 0.0)
++    with np.errstate(invalid="ignore", divide="ignore"):
++        b0 = xs.sum(axis=0) / n
++        b1 = (xs * (i - 1)).sum(axis=0) / (n * (n - 1))
++        b2 = (xs * (i - 1) * (i - 2)).sum(axis=0) / (n * (n - 1) * (n - 2))
++    l1 = b0
++    l2 = 2 * b1 - b0
++    l3 = 6 * b2 - 6 * b1 + b0
++    bad = n < 3
++    return (np.where(bad, np.nan, l1), np.where(bad, np.nan, l2),
++            np.where(bad, np.nan, l3), n)
++
++
++# ============================================================
++# GEV (seasonal maxima)
++# ============================================================
++
++
++def fit_gev_lmoments(
++    maxima: np.ndarray,
++    min_n: int = 15,
++    xi_bounds: tuple[float, float] = (-0.5, 0.5),
++) -> dict[str, np.ndarray]:
++    """
++    GEV parameters from seasonal maxima by L-moments (Hosking, 1990).
++
++    Parameters
++    ----------
++    maxima : numpy.ndarray
++        Seasonal maxima (n_seasons, ...).
++    min_n : int, default=15
++        Minimum number of valid seasons; NaN parameters below it.
++    xi_bounds : tuple, default=(-0.5, 0.5)
++        Bounds of the shape parameter. With ~26 seasons the at-site shape is
++        very uncertain; the bounds avoid absurd extrapolations. The location
++        and scale are recomputed for the bounded shape.
++
++    Returns
++    -------
++    dict
++        "xi", "sigma", "mu", "n", "xi_clipped" (bool).
++    """
++    l1, l2, l3, n = sample_lmoments(maxima)
++    with np.errstate(invalid="ignore", divide="ignore"):
++        t3 = l3 / l2
++        c = 2.0 / (3.0 + t3) - math.log(2.0) / math.log(3.0)
++        k = 7.8590 * c + 2.9554 * c ** 2                 # Hosking's k = -xi
++    k_clip = np.clip(k, -xi_bounds[1], -xi_bounds[0])
++    clipped = np.isfinite(k) & (k_clip != k)
++    small = np.abs(k_clip) < 1e-6
++    k_safe = np.where(small, 1.0, k_clip)
++    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
++        g = _gamma(1.0 + k_safe)
++        alpha = np.where(small, l2 / math.log(2.0), l2 * k_safe / ((1.0 - 2.0 ** (-k_safe)) * g))
++        zeta = np.where(small, l1 - EULER_GAMMA * alpha, l1 - alpha * (1.0 - g) / k_safe)
++    ok = (n >= min_n) & np.isfinite(alpha) & (alpha > 0)
++    return {
++        "xi": np.where(ok, -k_clip, np.nan),
++        "sigma": np.where(ok, alpha, np.nan),
++        "mu": np.where(ok, zeta, np.nan),
++        "n": n,
++        "xi_clipped": ok & clipped,
++    }
++
++
++def gev_return_level(T: float | np.ndarray, xi, sigma, mu) -> np.ndarray:
++    """
++    Value exceeded with probability 1/T per season (T in years, T > 1).
++    """
++    T = np.asarray(T, dtype=float)
++    if np.any(T <= 1.0):
++        raise ValueError("GEV return periods must be > 1 year.")
++    y = -np.log(1.0 - 1.0 / T)
++    xi, sigma, mu = (np.asarray(a, dtype=float) for a in (xi, sigma, mu))
++    small = np.abs(xi) < 1e-6
++    xi_safe = np.where(small, 1.0, xi)
++    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
++        return np.where(small, mu - sigma * np.log(y), mu + sigma / xi_safe * (y ** (-xi_safe) - 1.0))
++
++
++def gev_return_period(x, xi, sigma, mu) -> np.ndarray:
++    """
++    T(x) = 1 / P(seasonal maximum > x), in years (inf beyond an upper bound).
++    """
++    x, xi, sigma, mu = (np.asarray(a, dtype=float) for a in (x, xi, sigma, mu))
++    z = (x - mu) / sigma
++    small = np.abs(xi) < 1e-6
++    xi_safe = np.where(small, 1.0, xi)
++    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
++        base = 1.0 + xi_safe * z
++        t = np.where(small, np.exp(-z), np.where(base > 0, base ** (-1.0 / xi_safe), 0.0))
++        t = np.where((~small) & (xi_safe > 0) & (base <= 0), np.inf, t)   # below the lower bound
++        p_exceed = -np.expm1(-t)                                          # 1 - exp(-t)
++        T = 1.0 / p_exceed
++    return np.where(np.isfinite(x) & np.isfinite(sigma), T, np.nan)
++
++
++# ============================================================
++# GPD on declustered peaks (POT)
++# ============================================================
++
++
++def fit_gpd_top_k(
++    top: np.ndarray,
++    n_seasons: float | np.ndarray,
++    xi_bounds: tuple[float, float] = (-0.5, 0.5),
++    min_excesses: int = 20,
++) -> dict[str, np.ndarray]:
++    """
++    GPD fitted to the K largest declustered peaks above the (K+1)-th.
++
++    Parameters
++    ----------
++    top : numpy.ndarray
++        Peaks sorted in descending order (K+1, ...), NaN-padded.
++    n_seasons : float or numpy.ndarray
++        Number of seasons of the record (per pixel if it varies).
++    xi_bounds : tuple, default=(-0.5, 0.5)
++        Bounds of the shape parameter (scale recomputed if bounded).
++    min_excesses : int, default=20
++        Minimum number of excesses; NaN parameters below it.
++
++    Returns
++    -------
++    dict
++        "u" (threshold, mm), "sigma", "xi", "rate" (events per season above
++        u), "n_exc", "xi_clipped" (bool).
++    """
++    top = np.asarray(top, dtype=float)
++    finite = np.isfinite(top)
++    n_peaks = finite.sum(axis=0)
++    idx_u = np.clip(n_peaks - 1, 0, None)
++    u = np.take_along_axis(top, idx_u[None, ...], axis=0)[0]
++    n_exc = np.maximum(n_peaks - 1, 0)
++    rows = np.arange(top.shape[0]).reshape((-1,) + (1,) * (top.ndim - 1))
++    exc = np.where(finite & (rows < n_exc), top - u, np.nan)
++
++    l1, l2, _, _ = sample_lmoments(exc)
++    with np.errstate(invalid="ignore", divide="ignore"):
++        k = l1 / l2 - 2.0                               # Hosking's k = -xi
++    xi = np.clip(-k, xi_bounds[0], xi_bounds[1])
++    clipped = np.isfinite(k) & (xi != -k)
++    sigma = (1.0 - xi) * l1                             # mean excess = sigma / (1 - xi)
++    ok = (n_exc >= min_excesses) & np.isfinite(sigma) & (sigma > 0)
++    rate = n_exc / np.asarray(n_seasons, dtype=float)
++    return {
++        "u": np.where(ok, u, np.nan),
++        "sigma": np.where(ok, sigma, np.nan),
++        "xi": np.where(ok, xi, np.nan),
++        "rate": np.where(ok, rate, np.nan),
++        "n_exc": n_exc,
++        "xi_clipped": ok & clipped,
++    }
++
++
++def pot_return_level(R: float | np.ndarray, u, sigma, xi, rate) -> np.ndarray:
++    """
++    Value reached on average once every R years (lambda = 1 / R events per
++    season). NaN where 1 / R > rate (more frequent than the threshold: use
++    percentiles there).
++    """
++    R = np.asarray(R, dtype=float)
++    u, sigma, xi, rate = (np.asarray(a, dtype=float) for a in (u, sigma, xi, rate))
++    ratio = rate * R                                    # lambda_u / lambda
++    small = np.abs(xi) < 1e-6
++    xi_safe = np.where(small, 1.0, xi)
++    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
++        x = np.where(small, u + sigma * np.log(ratio), u + sigma / xi_safe * (ratio ** xi_safe - 1.0))
++    return np.where(ratio >= 1.0, x, np.nan)
++
++
++def pot_recurrence_interval(x, u, sigma, xi, rate) -> np.ndarray:
++    """
++    Mean recurrence interval R(x) = 1 / lambda(x), in years.
++
++    lambda(x) = rate * [1 + xi (x - u) / sigma]^(-1/xi) for x >= u. Below the
++    threshold the GPD does not apply: returns NaN (R < 1 / rate). Above an
++    upper bound (xi < 0) returns inf.
++    """
++    x, u, sigma, xi, rate = (np.asarray(a, dtype=float) for a in (x, u, sigma, xi, rate))
++    z = (x - u) / sigma
++    small = np.abs(xi) < 1e-6
++    xi_safe = np.where(small, 1.0, xi)
++    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
++        base = 1.0 + xi_safe * z
++        surv = np.where(small, np.exp(-z), np.where(base > 0, base ** (-1.0 / xi_safe), 0.0))
++        R = 1.0 / (rate * surv)
++    return np.where(np.isfinite(x) & (x >= u) & np.isfinite(sigma), R, np.nan)
++
++
++def empirical_pot_level(top: np.ndarray, n_seasons: float, R: Sequence[float]) -> np.ndarray:
++    """
++    Empirical value reached once every R years: the (R^-1 * n_seasons)-th
++    largest peak, interpolated linearly between ranks (rank m <-> lambda =
++    m / n_seasons). NaN where the rank exceeds the stored peaks or is < 1.
++    """
++    top = np.asarray(top, dtype=float)
++    out = []
++    for r in np.atleast_1d(np.asarray(R, dtype=float)):
++        m = n_seasons / r                     # fractional rank, 1-based
++        if m < 1.0 or m > top.shape[0]:
++            out.append(np.full(top.shape[1:], np.nan))
++            continue
++        lo = int(math.floor(m)) - 1
++        hi = min(lo + 1, top.shape[0] - 1)
++        w = m - math.floor(m)
++        out.append((1.0 - w) * top[lo] + w * top[hi])
++    return np.stack(out, axis=0)
++
++
++# ============================================================
++# Conversions
++# ============================================================
++
++
++def annual_return_period(R) -> np.ndarray:
++    """
++    Return period of the seasonal maximum from the mean recurrence interval of
++    events (Poisson events): T = 1 / (1 - exp(-1/R)). R = 1 -> T = 1.58.
++    """
++    R = np.asarray(R, dtype=float)
++    with np.errstate(divide="ignore"):
++        return 1.0 / -np.expm1(-1.0 / R)
++
++
++def recurrence_from_annual(T) -> np.ndarray:
++    """Inverse of annual_return_period: R = -1 / ln(1 - 1/T), T > 1."""
++    T = np.asarray(T, dtype=float)
++    return -1.0 / np.log1p(-1.0 / T)
++
++
++def events_per_season_above_percentile(q: float, wet_frequency, windows_per_season: float,
++                                       duration_h: int = 6) -> np.ndarray:
++    """
++    Rough number of independent events per season above the wet-window
++    percentile q: exceedances (1 - q) * wet_frequency * windows, divided by
++    the overlap of consecutive d-hour windows (d / 6). It ignores the
++    clustering of exceedances within one storm, so it is an upper bound.
++    """
++    return (1.0 - q) * np.asarray(wet_frequency, dtype=float) * windows_per_season / (duration_h / 6)
+diff --git a/tests/test_periodos_retorno_script.py b/tests/test_periodos_retorno_script.py
+new file mode 100644
+index 0000000..807f83c
+--- /dev/null
++++ b/tests/test_periodos_retorno_script.py
+@@ -0,0 +1,107 @@
++"""
++Tests for scripts/periodos_retorno.py with a synthetic reader (no MSWEP files).
++"""
++
++from __future__ import annotations
++
++import importlib.util
++import sys
++from pathlib import Path
++
++import numpy as np
++import pytest
++
++from itchi.return_periods import declustered_peaks, gev_return_period, running_sum
++
++SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "periodos_retorno.py"
++_spec = importlib.util.spec_from_file_location("periodos_retorno", SCRIPT)
++pr = importlib.util.module_from_spec(_spec)
++sys.modules["periodos_retorno"] = pr
++_spec.loader.exec_module(pr)
++
++LAT, LON = np.array([20.0, 20.1, 20.2]), np.array([-100.0, -99.9])
++
++
++def _season(year: int) -> np.ndarray:
++    return np.arange(np.datetime64(f"{year}-05-01T06"), np.datetime64(f"{year}-12-01T00"),
++                     np.timedelta64(6, "h"))
++
++
++def _reader(seed: int = 0, missing_year: int | None = None, gap: bool = False):
++    rng = np.random.default_rng(seed)
++    data = {}
++
++    def read(year: int):
++        if year == missing_year:
++            return None
++        if year not in data:
++            t = _season(year)
++            x = rng.gamma(0.25, 6.0, (t.size, LAT.size, LON.size)).astype(np.float32)
++            x *= (rng.random(x.shape) < 0.3)
++            x[:, 0, 0] *= 2.0                               # píxel más lluvioso
++            if gap:
++                keep = np.ones(t.size, bool)
++                keep[100:104] = False
++                t, x = t[keep], x[keep]
++            data[year] = (t, LAT, LON, x)
++        return data[year]
++
++    return read, data
++
++
++def _cfg(**kw) -> "pr.ConfigRP":
++    return pr.ConfigRP(start_year=2000, end_year=2025, filas_por_banda=2, **kw)
++
++
++def test_contiguous_fills_gaps() -> None:
++    t = _season(2001)
++    x = np.arange(t.size, dtype=float)[:, None]
++    keep = np.ones(t.size, bool)
++    keep[[5, 6, 50]] = False
++    out = pr.contiguous(t[keep], x[keep])
++    assert out.shape == x.shape and np.isnan(out[[5, 6, 50], 0]).all()
++    np.testing.assert_allclose(out[keep], x[keep])
++    with pytest.raises(ValueError):
++        pr.contiguous(t[[0, 0, 1]], x[:3])
++
++
++def test_compute_matches_brute_force() -> None:
++    read, data = _reader()
++    cfg = _cfg()
++    res = pr.compute(cfg, read, verbose=False)
++    st = res["state"]
++    for d in cfg.durations:
++        allpeaks = []
++        for iy, year in enumerate(cfg.years):
++            r = running_sum(data[year][3].astype(float), d // 6)
++            np.testing.assert_allclose(st["am"][d][iy], np.nanmax(r, axis=0), rtol=1e-6)
++            allpeaks.append(declustered_peaks(r, cfg.separacion_h[d] // 6, cfg.wet))
++        allpeaks = np.concatenate(allpeaks)
++        for j in range(LAT.size):
++            for i in range(LON.size):
++                v = np.sort(allpeaks[:, j, i][np.isfinite(allpeaks[:, j, i])])[::-1][: cfg.k + 1]
++                np.testing.assert_allclose(st["top"][d][: v.size, j, i], v, rtol=1e-6)
++        f = res["fits"][d]
++        assert (f["n_seasons"] == 26).all()
++        assert np.isfinite(f["gev"]["xi"]).all() and np.isfinite(f["gpd"]["xi"]).all()
++        # niveles crecientes con T y R; píxel más lluvioso con niveles mayores
++        assert (np.diff(f["rl_gev"], axis=0) > 0).all()
++        assert (np.diff(f["rl_pot"], axis=0)[np.isfinite(np.diff(f["rl_pot"], axis=0))] > 0).all()
++        assert f["rl_gev"][2, 0, 0] > f["rl_gev"][2, 1, 1]
++        # el máximo observado en 26 temporadas tiene T de decenas de años
++        T_max = gev_return_period(np.nanmax(st["am"][d], axis=0), f["gev"]["xi"], f["gev"]["sigma"],
++                                  f["gev"]["mu"])
++        assert (T_max > 5.0).all()
++
++
++def test_compute_missing_year_and_gaps() -> None:
++    read, _ = _reader(seed=1, missing_year=2003, gap=True)
++    res = pr.compute(_cfg(durations=(24,)), read, verbose=False)
++    assert 2003 not in res["leidos"] and len(res["leidos"]) == 25
++    assert (res["fits"][24]["n_seasons"] == 25).all()
++    assert np.isnan(res["state"]["am"][24][3]).all()
++
++
++def test_compute_without_files_raises() -> None:
++    with pytest.raises(FileNotFoundError):
++        pr.compute(_cfg(), lambda year: None, verbose=False)
+diff --git a/tests/test_return_periods.py b/tests/test_return_periods.py
+new file mode 100644
+index 0000000..22bdcbd
+--- /dev/null
++++ b/tests/test_return_periods.py
+@@ -0,0 +1,205 @@
++"""
++Tests for itchi.return_periods: series operations, L-moments, GEV and GPD fits.
++"""
++
++from __future__ import annotations
++
++import itertools
++import math
++
++import numpy as np
++import pytest
++
++from itchi.return_periods import (
++    annual_return_period,
++    declustered_peaks,
++    empirical_pot_level,
++    fit_gev_lmoments,
++    fit_gpd_top_k,
++    gev_return_level,
++    gev_return_period,
++    pot_recurrence_interval,
++    pot_return_level,
++    recurrence_from_annual,
++    running_sum,
++    sample_lmoments,
++    seasonal_maximum,
++    update_top_k,
++)
++
++
++def _gev_sample(rng, n, xi, sigma, mu):
++    u = rng.random(n)
++    y = -np.log(u)
++    return mu + sigma / xi * (y ** (-xi) - 1.0) if abs(xi) > 1e-9 else mu - sigma * np.log(y)
++
++
++# ------------------------------------------------------------------ series
++
++
++def test_running_sum_and_nan() -> None:
++    x = np.array([1.0, 2.0, 3.0, np.nan, 5.0, 6.0])
++    np.testing.assert_allclose(running_sum(x, 2), [np.nan, 3.0, 5.0, np.nan, np.nan, 11.0])
++    np.testing.assert_allclose(running_sum(x, 1), x)
++    assert np.isnan(running_sum(np.ones(2), 4)).all()
++
++
++def test_declustered_peaks_separation_ties_and_threshold() -> None:
++    x = np.array([0, 5, 9, 7, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 3, 3, 0, 0.5, 0], dtype=float)
++    p = declustered_peaks(x, min_separation=3, threshold=1.0)
++    assert np.nonzero(np.isfinite(p))[0].tolist() == [2, 8, 15]     # 9; 8; first of the tie; 0.5 < 1 mm
++    p2 = declustered_peaks(x, min_separation=6, threshold=1.0)
++    assert np.nonzero(np.isfinite(p2))[0].tolist() == [2, 15]       # 8 is within 6 steps of 9
++    xn = x.copy()
++    xn[2] = np.nan
++    assert np.isfinite(declustered_peaks(xn, 3)[3])                  # NaN does not block a neighbour
++
++
++def test_declustered_peaks_two_dimensional() -> None:
++    rng = np.random.default_rng(0)
++    x = rng.gamma(0.3, 5.0, (200, 7))
++    p = declustered_peaks(x, 4)
++    for j in range(7):
++        idx = np.nonzero(np.isfinite(p[:, j]))[0]
++        assert (np.diff(idx) > 4).all()
++        np.testing.assert_allclose(p[idx, j], x[idx, j])
++
++
++def test_update_top_k_equals_full_sort() -> None:
++    rng = np.random.default_rng(1)
++    chunks = [np.where(rng.random((50, 4)) < 0.3, rng.gamma(1.0, 10.0, (50, 4)), np.nan) for _ in range(5)]
++    top = None
++    for c in chunks:
++        top = update_top_k(top, c, 12)
++    allv = np.concatenate(chunks)
++    for j in range(4):
++        ref = np.sort(allv[:, j][np.isfinite(allv[:, j])])[::-1][:12]
++        np.testing.assert_allclose(top[: ref.size, j], ref)
++    few = update_top_k(None, np.array([[3.0], [np.nan], [1.0]]), 5)
++    assert few[:2, 0].tolist() == [3.0, 1.0] and np.isnan(few[2:, 0]).all()
++
++
++def test_seasonal_maximum_requires_valid_fraction() -> None:
++    x = np.ones((10, 2))
++    x[:, 1] = np.nan
++    x[0, 1] = 5.0
++    np.testing.assert_allclose(seasonal_maximum(x), [1.0, np.nan])
++
++
++# ------------------------------------------------------------------ L-momentos
++
++
++def test_sample_lmoments_against_definition() -> None:
++    rng = np.random.default_rng(2)
++    x = rng.gamma(2.0, 3.0, 9)
++    l1, l2, l3, n = sample_lmoments(x[:, None])
++    # definición directa por combinaciones (Hosking, 1990)
++    s = np.sort(x)
++    c2 = [b - a for a, b in itertools.combinations(s, 2)]
++    c3 = [c - 2 * b + a for a, b, c in itertools.combinations(s, 3)]
++    assert l1[0] == pytest.approx(x.mean())
++    assert l2[0] == pytest.approx(np.mean(c2) / 2)
++    assert l3[0] == pytest.approx(np.mean(c3) / 3)
++    xn = np.r_[x, np.nan, np.nan][:, None]
++    assert sample_lmoments(xn)[1][0] == pytest.approx(l2[0]) and sample_lmoments(xn)[3][0] == 9
++
++
++# ------------------------------------------------------------------ GEV
++
++
++@pytest.mark.parametrize("xi", [-0.15, 0.0, 0.15])
++def test_gev_fit_recovers_parameters(xi: float) -> None:
++    rng = np.random.default_rng(3)
++    sample = _gev_sample(rng, 20000, xi, 20.0, 80.0)[:, None]
++    fit = fit_gev_lmoments(sample)
++    assert fit["xi"][0] == pytest.approx(xi, abs=0.03)
++    assert fit["sigma"][0] == pytest.approx(20.0, rel=0.04)
++    assert fit["mu"][0] == pytest.approx(80.0, rel=0.02)
++    true10 = gev_return_level(10.0, xi, 20.0, 80.0)
++    assert gev_return_level(10.0, fit["xi"], fit["sigma"], fit["mu"])[0] == pytest.approx(true10, rel=0.03)
++
++
++def test_gev_return_level_and_period_are_inverse() -> None:
++    T = np.array([1.5, 2.0, 5.0, 10.0, 50.0, 100.0])
++    for xi in (-0.2, 0.0, 0.2):
++        x = gev_return_level(T, xi, 15.0, 60.0)
++        np.testing.assert_allclose(gev_return_period(x, xi, 15.0, 60.0), T, rtol=1e-9)
++    assert gev_return_period(1e6, -0.2, 15.0, 60.0) == np.inf       # above the upper bound
++    assert gev_return_period(-1e6, 0.2, 15.0, 60.0) == pytest.approx(1.0)
++    with pytest.raises(ValueError):
++        gev_return_level(1.0, 0.0, 1.0, 0.0)
++
++
++def test_gev_min_n_and_clipping() -> None:
++    rng = np.random.default_rng(4)
++    am = _gev_sample(rng, 26 * 400, 0.1, 20.0, 80.0).reshape(26, 400)
++    am[12:, 0] = np.nan                       # 12 seasons < min_n
++    fit = fit_gev_lmoments(am)
++    assert np.isnan(fit["xi"][0]) and np.isfinite(fit["xi"][1:]).all()
++    assert (fit["xi"][1:] >= -0.5).all() and (fit["xi"][1:] <= 0.5).all()
++    heavy = _gev_sample(np.random.default_rng(5), 5000, 0.9, 20.0, 80.0)[:, None]
++    f2 = fit_gev_lmoments(heavy)
++    assert f2["xi"][0] == pytest.approx(0.5) and f2["xi_clipped"][0]
++
++
++# ------------------------------------------------------------------ GPD (POT)
++
++
++def _pot_record(rng, n_seasons, rate, xi, sigma, u, k):
++    """Peaks of a Poisson process above u with GPD excesses; returns the top k+1."""
++    n = rng.poisson(rate * n_seasons)
++    v = rng.random(n)
++    exc = sigma / xi * (v ** (-xi) - 1.0) if abs(xi) > 1e-9 else -sigma * np.log(v)
++    peaks = np.sort(u + exc)[::-1]
++    return update_top_k(None, peaks[:, None], k + 1)
++
++
++@pytest.mark.parametrize("xi", [-0.1, 0.0, 0.2])
++def test_gpd_fit_and_return_levels(xi: float) -> None:
++    rng = np.random.default_rng(6)
++    n_seasons, rate, sigma, u, k = 2000, 3.0, 12.0, 30.0, 6000
++    top = _pot_record(rng, n_seasons, rate, xi, sigma, u, k)
++    fit = fit_gpd_top_k(top, n_seasons)
++    assert fit["xi"][0] == pytest.approx(xi, abs=0.04)
++    for R in (1.0, 10.0):
++        lam = 1.0 / R
++        true = u + (sigma / xi * ((rate / lam) ** xi - 1.0) if xi else sigma * np.log(rate / lam))
++        est = pot_return_level(R, fit["u"], fit["sigma"], fit["xi"], fit["rate"])[0]
++        assert est == pytest.approx(true, rel=0.05)
++        emp = empirical_pot_level(top, n_seasons, [R])[0, 0]
++        assert emp == pytest.approx(true, rel=0.05)
++
++
++def test_pot_level_and_interval_are_inverse() -> None:
++    R = np.array([0.5, 1.0, 2.0, 10.0, 50.0])
++    for xi in (-0.2, 0.0, 0.25):
++        x = pot_return_level(R, 25.0, 10.0, xi, 3.0)
++        np.testing.assert_allclose(pot_recurrence_interval(x, 25.0, 10.0, xi, 3.0), R, rtol=1e-9)
++    assert np.isnan(pot_return_level(0.2, 25.0, 10.0, 0.1, 3.0))        # more frequent than u
++    assert np.isnan(pot_recurrence_interval(20.0, 25.0, 10.0, 0.1, 3.0))  # below u
++    assert pot_recurrence_interval(1e5, 25.0, 10.0, -0.2, 3.0) == np.inf
++
++
++def test_gpd_needs_enough_peaks() -> None:
++    top = np.full((79, 2), np.nan)
++    top[:10, 0] = np.linspace(50.0, 10.0, 10)
++    top[:, 1] = np.linspace(80.0, 5.0, 79)
++    fit = fit_gpd_top_k(top, 26)
++    assert np.isnan(fit["u"][0]) and fit["u"][1] == pytest.approx(5.0)
++    assert fit["rate"][1] == pytest.approx(78 / 26)
++
++
++def test_empirical_pot_level_ranks() -> None:
++    top = np.arange(100.0, 0.0, -1.0)[:, None]             # 100, 99, ..., 1
++    lv = empirical_pot_level(top, 10.0, [10.0, 1.0, 0.5, 0.05])[:, 0]
++    assert lv[0] == 100.0 and lv[1] == 91.0 and lv[2] == 81.0 and np.isnan(lv[3])
++
++
++# ------------------------------------------------------------------ conversiones
++
++
++def test_annual_return_period_conversion() -> None:
++    assert annual_return_period(1.0) == pytest.approx(1.0 / (1.0 - math.exp(-1.0)))
++    T = np.array([1.1, 2.0, 10.0, 100.0])
++    np.testing.assert_allclose(annual_return_period(recurrence_from_annual(T)), T)
++    assert annual_return_period(100.0) == pytest.approx(100.5, abs=0.01)

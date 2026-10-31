@@ -1,0 +1,18 @@
+# Bloque 1, celda P1-W0: lluvia con P95 como máximo (M1); viento v0.2.
+experiment:
+  name: "b1_p1_w0"
+  description: "M1 (P95 máximo, escalada desde P75) y cola hasta R_W06"
+
+precipitation:
+  hazard_model: "class_table"
+  class_table:
+    # M1: P95 de 6 h es el máximo; con R24 >= P95 y A72 >= P75, P90 ya es el
+    # máximo (la escalada de v0.2 recorrida una clase). precipitation.PRECIP_TABLES_B1["M1"]
+    axes:
+      P6: ["Q75", "Q90", "Q95"]
+      R24: ["Q75", "Q90", "Q95"]
+      A72: ["Q75", "Q90", "Q95"]
+    p6_values: [0.0, 0.0, 0.5, 1.0]     # H en (0 mm, P75, P90, P95)
+    rules:
+      - when: {R24: "Q95", A72: "Q75"}
+        p6_values: [0.0, 0.0, 1.0, 1.0]

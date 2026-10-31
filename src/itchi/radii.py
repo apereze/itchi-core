@@ -335,3 +335,149 @@ def resolve_attribution_radius(
         radii_by_quadrant=rocloud_by_quadrant,
         strategy=fill_strategy,
     )
+
+
+# ============================================================
+# ITCHI v0.2: attribution radius with the W06 outer radius
+# ============================================================
+
+W06_ATTRIBUTION_MODES: tuple[str, ...] = ("never", "fallback", "floor", "always")
+
+
+@dataclass(frozen=True)
+class AttributionRadii:
+    """
+    Attribution radius by quadrant and how each quadrant was resolved.
+
+    Attributes
+    ----------
+    radii : dict[str, float]
+        Final attribution radius R_attr_q (km), keys RNE, RSE, RSW, RNW.
+    status : dict[str, str]
+        Rule applied in each quadrant: "rocloud", "rocloud_filled" (mean of the
+        valid ROCLOUD quadrants), "w06_missing_rocloud", "w06_floor" or "w06".
+    clipped_to_direct : tuple[str, ...]
+        Quadrants raised to R_direct_q because the resolved radius was smaller.
+    mode : str
+        W06 attribution mode used.
+    """
+
+    radii: dict[str, float]
+    status: dict[str, str]
+    clipped_to_direct: tuple[str, ...]
+    mode: str
+
+
+def _rocloud_value(value: Any) -> float:
+    """
+    ROCLOUD radius in km or NaN; 0 and negative values mean no detection.
+    """
+    value = _clean_radius_value(value)
+    return value if np.isfinite(value) and value > 0.0 else np.nan
+
+
+def resolve_attribution_radius_with_w06(
+    rocloud_by_quadrant: dict[str, Any] | None,
+    r_w06_by_quadrant: dict[str, Any],
+    direct_by_quadrant: dict[str, Any] | None = None,
+    mode: str = "floor",
+    fill_strategy: str = "mean_available",
+) -> AttributionRadii:
+    """
+    Resolve the attribution radius R_attr_q from ROCLOUD and the W06 outer radius.
+
+    Rules by quadrant (ROCLOUD <= 0 or missing = no detection):
+
+    - "never":    ROCLOUD_q; missing quadrants filled with the mean of the
+                  valid ones (v0.1, ``resolve_attribution_radius``).
+    - "fallback": R_W06_q where ROCLOUD_q is missing, otherwise ROCLOUD_q.
+    - "floor":    R_W06_q where ROCLOUD_q is missing or smaller than R_W06_q,
+                  otherwise ROCLOUD_q (ITCHI v0.2 default).
+    - "always":   R_W06_q.
+
+    In every mode the result is raised to R_direct_q where it is smaller, so
+    that R_direct_q <= R_attr_q.
+
+    Parameters
+    ----------
+    rocloud_by_quadrant : dict[str, Any] or None
+        ROCLOUD radii by quadrant in km; None means no ROCLOUD record.
+    r_w06_by_quadrant : dict[str, Any]
+        W06 outer radius by quadrant in km (all quadrants finite and > 0
+        unless mode == "never").
+    direct_by_quadrant : dict[str, Any] or None, default=None
+        R_direct_q in km; None skips the lower bound.
+    mode : {"never", "fallback", "floor", "always"}, default="floor"
+        Role of R_W06.
+    fill_strategy : str, default="mean_available"
+        Filling strategy for mode="never".
+
+    Returns
+    -------
+    AttributionRadii
+        Final radii, status by quadrant and clipped quadrants.
+
+    Raises
+    ------
+    ValueError
+        If the mode is unknown, R_W06 is invalid where it is needed, or
+        mode="never" has no valid ROCLOUD quadrant.
+    """
+    if mode not in W06_ATTRIBUTION_MODES:
+        raise ValueError(f"Unsupported W06 attribution mode: {mode!r}")
+
+    if rocloud_by_quadrant is None:
+        rocloud = {q: np.nan for q in QUADRANTS}
+    else:
+        rocloud = {
+            q: _rocloud_value(v)
+            for q, v in standardize_quadrant_radii(rocloud_by_quadrant).items()
+        }
+
+    radii: dict[str, float] = {}
+    status: dict[str, str] = {}
+
+    if mode == "never":
+        valid = {q: v for q, v in rocloud.items() if np.isfinite(v)}
+        if not valid:
+            raise ValueError("mode='never' requires at least one valid ROCLOUD quadrant.")
+        filled = fill_missing_quadrant_radii(
+            {q: (v if np.isfinite(v) else None) for q, v in rocloud.items()},
+            strategy=fill_strategy,
+        )
+        radii = dict(filled.radii)
+        status = {
+            q: ("rocloud_filled" if q in filled.filled_quadrants else "rocloud")
+            for q in QUADRANTS
+        }
+    else:
+        r_w06 = standardize_quadrant_radii(r_w06_by_quadrant)
+        bad = [q for q in QUADRANTS if not (np.isfinite(r_w06[q]) and r_w06[q] > 0.0)]
+        if bad:
+            raise ValueError(f"R_W06 must be finite and > 0 in quadrant(s): {', '.join(bad)}")
+
+        for q in QUADRANTS:
+            roc, w06 = rocloud[q], float(r_w06[q])
+            if mode == "always":
+                radii[q], status[q] = w06, "w06"
+            elif not np.isfinite(roc):
+                radii[q], status[q] = w06, "w06_missing_rocloud"
+            elif mode == "floor" and roc < w06:
+                radii[q], status[q] = w06, "w06_floor"
+            else:
+                radii[q], status[q] = float(roc), "rocloud"
+
+    clipped: list[str] = []
+    if direct_by_quadrant is not None:
+        direct = standardize_quadrant_radii(direct_by_quadrant)
+        for q in QUADRANTS:
+            if np.isfinite(direct[q]) and radii[q] < direct[q]:
+                radii[q] = float(direct[q])
+                clipped.append(q)
+
+    return AttributionRadii(
+        radii={q: float(radii[q]) for q in QUADRANTS},
+        status=status,
+        clipped_to_direct=tuple(clipped),
+        mode=mode,
+    )

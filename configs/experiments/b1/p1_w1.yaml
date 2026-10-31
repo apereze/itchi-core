@@ -1,0 +1,22 @@
+# Bloque 1, celda P1-W1: ambos cambios.
+experiment:
+  name: "b1_p1_w1"
+  description: "M1 (P95 máximo) y cola cortada en 12 m/s"
+
+precipitation:
+  hazard_model: "class_table"
+  class_table:
+    # M1: P95 de 6 h es el máximo; con R24 >= P95 y A72 >= P75, P90 ya es el
+    # máximo (la escalada de v0.2 recorrida una clase). precipitation.PRECIP_TABLES_B1["M1"]
+    axes:
+      P6: ["Q75", "Q90", "Q95"]
+      R24: ["Q75", "Q90", "Q95"]
+      A72: ["Q75", "Q90", "Q95"]
+    p6_values: [0.0, 0.0, 0.5, 1.0]     # H en (0 mm, P75, P90, P95)
+    rules:
+      - when: {R24: "Q95", A72: "Q75"}
+        p6_values: [0.0, 0.0, 1.0, 1.0]
+
+wind:
+  # Corte de la cola de viento en 12 m/s (23.3 kt, viento sostenido 1 min del perfil W06)
+  tail_end_wind_ms: 12.0

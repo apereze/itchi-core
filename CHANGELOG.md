@@ -7,6 +7,114 @@ and this project uses semantic versioning principles while the API is under acti
 
 ---
 
+## [0.2.1] - 2026-10-30
+
+Consistency fixes, a single v0.2 entry point and the Block 1 experiments
+(P95 as maximum, R24/A72 thresholds, wind-tail cut). The v0.2 formulation
+(matrix, W06 tail, h34) is unchanged and remains the default; the
+attribution radius changes from R_W06 (verification studies) to ROCLOUD with
+an R_W06 floor. Next development line: v0.3 (`docs/plan_v0.3.md`).
+
+### Added
+
+- `pipeline.compute_itchi_snapshot_v02`: ITCHI v0.2 from P6, R24, A72 and
+  their 6/24/72-h percentile climatologies. Computes the precipitation
+  matrix, the direct radius (observed R34; RMW or parametric R34 as
+  fallback), R_W06, the attribution radius and the W06 wind with a tail that
+  ends at R_W06. Reports `H_P_missing`, radii and status by quadrant,
+  `itchi_formulation = "v0.2"`. Keyword defaults equal `configs/default.yaml`.
+- `radii.resolve_attribution_radius_with_w06` and `AttributionRadii`: role
+  of R_W06 in the attribution radius by quadrant, modes `"never"`,
+  `"fallback"`, `"floor"` (default) and `"always"`; ROCLOUD <= 0 counts as
+  no detection; never below R_direct_q.
+- `parametric_radii.compute_w06_reference_radii` and `R_W06_DEFAULTS`:
+  R_W06 (V = 2 m/s, PA21 configuration), parametric R34 and Rmax of one
+  record; same as `pa21_r2_km` of the v0.2 verification.
+- `parametric_radii.compute_w06_wind_hazard_with_tail(tail_end_wind_kt=...)`:
+  optional cut of the tail at a wind speed (decision D1); the tail never
+  extends beyond the tail-end radius. Default unchanged.
+- `config.itchi_v02_settings_from_config`: keyword arguments of the v0.2
+  entry point from a configuration.
+- `climatology.load_percentile_climatology` and
+  `climatology.quantile_dataarray_to_dict`: read the
+  `mswep_v3_{6,24,72}h_percentiles_may_nov.nc` files as {"Q75": ..., ...}.
+- `tests/test_v02_snapshot.py`, including a test that the defaults of the
+  v0.2 entry point equal `configs/default.yaml` and a test that the entry
+  point reproduces the setting of the v0.2 studies.
+
+- Block 1 (`docs/experimento_b1.md`): `precipitation.compute_precipitation_class_table_hazard`,
+  a class table P6 x R24 x A72 against each variable's own percentiles,
+  interpolated multilinearly (non-decreasing in every input); spec by base
+  ramp and rules or explicit table, optional P75 gate.
+  `PRECIP_TABLE_V02` reproduces the v0.2 matrix to 1e-12;
+  `PRECIP_TABLES_B1` holds the candidates with P95 as maximum (M0 6 h only,
+  M1 v0.2 escalation one class earlier, M2 gated maximum of durations).
+  Helpers `compute_percentile_coordinate`, `build_precipitation_class_table`,
+  `compute_precipitation_hazard_from_spec`.
+- `compute_itchi_snapshot_v02` accepts a class-table spec as `precip_matrix`
+  (`precipitation_hazard_source = "class_table"`).
+- Configuration: `precipitation.hazard_model: "class_table"` with
+  `precipitation.class_table`; `wind.tail_end_wind_ms`;
+  `config.load_experiment_config` and `config.merge_config` (overlays);
+  `configs/experiments/b1/p{0,1}_w{0,1}.yaml` (2 x 2 design: v0.2 / M1 x
+  tail to R_W06 / cut at 12 m/s).
+- `scripts/experimento_b1.py`: candidates and 2 x 2 on the
+  municipality-cyclone pairs (cell table P(D | P6 x R24 x A72), M1 threshold
+  grid and ablations, M3 calibrated table with leave-one-year-out
+  validation, wind variants, AUC by year, PSS, SEDI, bootstrap by cyclone,
+  POD at equal POFD).
+- `scripts/negativos_w06.py --guardar-pasos`: per-step table for the
+  experiment; `lat_ct` added to the steps.
+- `scripts/figuras_b1.py` and `notebooks/third test/09_bloque1_experimentos.ipynb`:
+  figures of each experiment (part A, no data: hazard of each scheme, class
+  maps P6 x R24, wind tails; part B: cell evidence, candidates, ROC,
+  threshold grid, 2 x 2, class frequencies) and the decision table.
+- `tests/test_class_table.py`, `tests/test_experimento_b1.py`.
+- `scripts/declaratorias_6h.local_path`: `D:/...` paths also work from WSL;
+  `negativos_w06.py` stops with a clear message if no 6-h file is read.
+
+### Changed
+
+- `configs/default.yaml`: header states which function uses it;
+  precipitation as a 6-h accumulation ending at T (`precipitation_window`,
+  `temporal_alignment: "window_end"`, tolerance 0 h) instead of the v0.1
+  snapshot fields; `climatology_variable: "p_wet_raw"` (the variable of all
+  v0.2 results); `geometry.attribution_floor: "R_W06"`;
+  `parametric_radii.attribution_radius_mode: "floor"` with the documented
+  modes; new `parametric_radii.r_w06`, `wind.tail_end_radius`,
+  `wind.tail_end_wind_kt`, `precipitation.matrix_v02.nan_hazard_value` and
+  `geometry.radius_fill_strategy`.
+- README: v0.2 entry point and attribution rule; `compute_itchi_snapshot_from_grid`
+  documented as keeping the v0.1 defaults.
+- CHANGELOG: "Planned" section updated to the current state.
+
+### Fixed
+
+- The configuration declared `matrix_v02` and `w06_tail` as defaults while
+  the pipeline defaulted to v0.1 and did not read it; v0.2 now has its own
+  entry point whose defaults are tested against the file.
+- The v0.2 precipitation matrix had to be computed outside the pipeline and
+  passed as `precipitation_hazard`.
+
+
+### Notes (Block 1 results, `docs/experimento_b1.md` section 9)
+
+- 381 929 municipality-cyclone pairs, 2 % with declaration, index evaluated
+  at every step of the event.
+- P95 of 6 h as maximum (M0) does not improve discrimination: PSS class 5
+  0.553 -> 0.546 (90 % CI of the difference [-0.023, +0.008]), POD at equal
+  POFD -0.004 (same ROC curve), AUC 0.869 -> 0.842, +61 % class-5 alerts.
+  Not adopted.
+- R24/A72 below P95 add little: best +0.006 PSS over M0 (R24 >= P95 alone);
+  A72 >= P75 alone -0.008. Above P95 they matter: P(D) with P6 >= P95 and
+  R24 >= P95 goes from 5.7 % (A72 < P75) to 21.8 % (A72 >= P95).
+- Wind tail cut: 12 m/s restores class 1 (PSS 0.000 -> 0.472) with AUC
+  0.887; 17 kt gives 0.480 and 0.895. Rain and wind effects are additive.
+- Declarations are a noisy, coarse impact record; from v0.3 the hazard is
+  defined climatologically (return periods, absolute wind thresholds) and
+  declarations are used only as an ordinal check.
+---
+
 ## [0.2.0] - 2026-10-26
 
 ITCHI v0.2 keeps the v0.1 structure (direct, indirect and exterior regions;
@@ -175,19 +283,25 @@ pip install -e .
 
 ## Planned
 
-### Near-term
+### Done since v0.1
 
-* Add GitHub Actions continuous integration.
-* Add a formal `docs/methodology.md`.
-* Add a first real-case workflow with one tropical cyclone.
-* Add notebook for single-snapshot diagnostics.
-* Add notebook for single-event synthetic diagnostics.
-* Add examples for NetCDF output writing.
+- GitHub Actions workflow, `docs/methodology.md`, real cases (Willa 2018,
+  Cristóbal 2020, Odile 2014), MSWEP V3.16 adapters and 6/24/72-h
+  climatology, validation against disaster declarations.
 
-### Future
+### v0.2.1 (experiments on top of `compute_itchi_snapshot_v02`)
 
-* Add climatology utilities for Q90/Q95/Q99.
-* Add precipitation snapshot alignment utilities.
-* Add real-data adapters for MSWEP, IBTrACS and ROCLOUD.
-* Add validation routines using observed disaster/emergency records.
-* Add performance optimization for large `xarray`/`dask` grids.
+* Timing convention of P6/R24/A72 against IBTrACS (late alerts in Odile).
+* Declaration–cyclone association by storm name (D5).
+* Information added by the escalation at equal POFD; cross-validation by
+  year and bootstrap by cyclone (D6).
+* Wind-tail cut and h34 in the full pipeline (D1, D2).
+* Hours-in-alert event product (D7).
+* New cyclone cases, risk cuts, landslide records, lead time of the alert
+  relative to the declaration, ITCHI aggregated by municipality.
+
+### Later (v0.3)
+
+* Brief vs persistent rain at >= P99 (D4), soil moisture instead of A72 (D8),
+  wind normalization (D9).
+* Performance optimization for large `xarray`/`dask` grids.

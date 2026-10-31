@@ -1,0 +1,381 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 5eb8b9c..5d8aad3 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,12 +7,13 @@ and this project uses semantic versioning principles while the API is under acti
+ 
+ ---
+ 
+-## [Unreleased] - 0.2.1
++## [0.2.1] - 2026-10-30
+ 
+-Consistency fixes and a single v0.2 entry point, as the base for the 0.2.1
+-experiments. The v0.2 formulation (matrix, W06 tail, h34) is unchanged; the
++Consistency fixes, a single v0.2 entry point and the Block 1 experiments
++(P95 as maximum, R24/A72 thresholds, wind-tail cut). The v0.2 formulation
++(matrix, W06 tail, h34) is unchanged and remains the default; the
+ attribution radius changes from R_W06 (verification studies) to ROCLOUD with
+-an R_W06 floor.
++an R_W06 floor. Next development line: v0.3 (`docs/plan_v0.3.md`).
+ 
+ ### Added
+ 
+@@ -69,6 +70,8 @@ an R_W06 floor.
+   maps P6 x R24, wind tails; part B: cell evidence, candidates, ROC,
+   threshold grid, 2 x 2, class frequencies) and the decision table.
+ - `tests/test_class_table.py`, `tests/test_experimento_b1.py`.
++- `scripts/declaratorias_6h.local_path`: `D:/...` paths also work from WSL;
++  `negativos_w06.py` stops with a clear message if no 6-h file is read.
+ 
+ ### Changed
+ 
+@@ -93,6 +96,23 @@ an R_W06 floor.
+ - The v0.2 precipitation matrix had to be computed outside the pipeline and
+   passed as `precipitation_hazard`.
+ 
++
++### Notes (Block 1 results, `docs/experimento_b1.md` section 9)
++
++- 381 929 municipality-cyclone pairs, 2 % with declaration, index evaluated
++  at every step of the event.
++- P95 of 6 h as maximum (M0) does not improve discrimination: PSS class 5
++  0.553 -> 0.546 (90 % CI of the difference [-0.023, +0.008]), POD at equal
++  POFD -0.004 (same ROC curve), AUC 0.869 -> 0.842, +61 % class-5 alerts.
++  Not adopted.
++- R24/A72 below P95 add little: best +0.006 PSS over M0 (R24 >= P95 alone);
++  A72 >= P75 alone -0.008. Above P95 they matter: P(D) with P6 >= P95 and
++  R24 >= P95 goes from 5.7 % (A72 < P75) to 21.8 % (A72 >= P95).
++- Wind tail cut: 12 m/s restores class 1 (PSS 0.000 -> 0.472) with AUC
++  0.887; 17 kt gives 0.480 and 0.895. Rain and wind effects are additive.
++- Declarations are a noisy, coarse impact record; from v0.3 the hazard is
++  defined climatologically (return periods, absolute wind thresholds) and
++  declarations are used only as an ordinal check.
+ ---
+ 
+ ## [0.2.0] - 2026-10-26
+diff --git a/README.md b/README.md
+index eab3e37..d94dd67 100644
+--- a/README.md
++++ b/README.md
+@@ -7,7 +7,7 @@
+ 
+ **Integrated Tropical Cyclone Hazard Index**
+ 
+-Repository for the development of the computational core of **ITCHI**, a physically based tropical-cyclone hazard index. Current version: **0.2.0**.
++Repository for the development of the computational core of **ITCHI**, a physically based tropical-cyclone hazard index. Current version: **0.2.1** (formulation v0.2; 0.2.1 adds the v0.2 entry point, consistency fixes and the Block 1 experiments, see [`CHANGELOG.md`](CHANGELOG.md)).
+ 
+ **What is new in v0.2.** Entry point: `pipeline.compute_itchi_snapshot_v02` (P6, R24, A72 and their percentile climatologies; keyword defaults equal [`configs/default.yaml`](configs/default.yaml)). `compute_itchi_snapshot_from_grid` keeps the v0.1 defaults, with the v0.2 options as opt-in arguments. Details in [`docs/methodology.md`](docs/methodology.md), results in [`docs/verification_v02.md`](docs/verification_v02.md), changes in [`CHANGELOG.md`](CHANGELOG.md):
+ 
+diff --git a/configs/default.yaml b/configs/default.yaml
+index d05edd0..19f71e2 100644
+--- a/configs/default.yaml
++++ b/configs/default.yaml
+@@ -14,7 +14,7 @@
+ 
+ project:
+   name: "itchi-core"
+-  version: "0.2.0"
++  version: "0.2.1"
+   description: "Core computational workflow for ITCHI v0.2"
+ 
+ 
+diff --git a/docs/dev_log.md b/docs/dev_log.md
+index ee0f4d4..8503cbe 100644
+--- a/docs/dev_log.md
++++ b/docs/dev_log.md
+@@ -100,3 +100,14 @@ pre-commit run --all-files
+   modos de atribución documentados, bloque `r_w06` (PA21, 2 m/s).
+ - Gancho para experimentos: `wind_tail_end_kt` (corte de la cola, D1).
+ - Pendiente: correr `pytest` local y en CI; luego los experimentos de 0.2.1.
++
++## 2026-10-30 — Cierre de ITCHI v0.2.1
++
++- Versión 0.2.1. Incluye el punto de entrada `compute_itchi_snapshot_v02`, la regla
++  ROCLOUD con piso R_W06, la configuración consistente y la tabla de clases P6 × R24 × A72.
++- Bloque 1: P95 como máximo no se adopta; R24/A72 solo importan por encima de P95; cortar
++  la cola de viento recupera la clase 1 (17 kt rinde algo más que 12 m/s). Resultados en
++  `docs/experimento_b1.md`, sección 9.
++- Las declaratorias quedan como prueba ordinal. Siguiente línea de trabajo: v0.3
++  (climatología de estados, periodos de retorno, viento con umbrales absolutos);
++  ver `docs/plan_v0.3.md`.
+diff --git a/docs/experimento_b1.md b/docs/experimento_b1.md
+index 0eef813..4bbe783 100644
+--- a/docs/experimento_b1.md
++++ b/docs/experimento_b1.md
+@@ -183,6 +183,49 @@ settings = itchi_v02_settings_from_config(load_experiment_config("configs/experi
+ result = compute_itchi_snapshot_v02(p6, r24, a72, ..., **settings)
+ ```
+ 
++## 9. Resultados (corrida del 30 de octubre de 2026)
++
++Modo pasos, 381 929 pares, 7 462 con declaratoria (2.0 %), 1000 réplicas de
++bootstrap por ciclón. Tablas completas en
++`outputs/diagnostics/experimento_b1/resumen_b1.md`.
++
++**E1. P95 como máximo: no se adopta.**
++
++| Solo lluvia | v0.2 | M0 (P95 máximo) |
++|---|--:|--:|
++| AUC por año | 0.869 | 0.842 |
++| PSS clase ≥ 5 | 0.553 | 0.546 (Δ −0.007 [−0.023, +0.008]) |
++| ΔPOD a igual POFD | — | −0.004 |
++| Sesgo clase 5 | 6.4 | 10.3 (+61 %) |
++| PSS clase ≥ 3 | 0.549 | 0.521 |
++
++M0 se mueve sobre la misma curva ROC: alerta más sin distinguir mejor, y
++pierde AUC porque iguala todo lo que está por encima del P95.
++
++**E2. Por debajo de P95, R24 y A72 casi no aportan.** Contra M0, el mejor es
++M1 con +0.006 [+0.001, +0.011]. Todo el aporte viene de R24 ≥ P95, porque la
++variante solo con R24 da lo mismo. A72 ≥ P75 solo empeora el resultado (−0.008),
++y M2 y M3 no aportan. En cambio, por encima de P95 sí importan: con P6 ≥ P95 y
++R24 ≥ P95, P(D) pasa de 5.7 % (A72 < P75) a 10.0, 13.9 y 21.8 % (A72 ≥ P95).
++Un P6 ≥ P95 sin R24 ≥ P95 tiene P(D) ≈ 1–3 %, igual que P90–P95.
++
++**E3. El corte de la cola funciona; 17 kt rinde algo más que 12 m/s.**
++
++| Viento (lluvia v0.2) | Pares con H_W > 0 | PSS clase ≥ 1 | AUC |
++|---|--:|--:|--:|
++| Sin viento | 0 % | 0.445 | 0.869 |
++| Cola hasta R_W06 | 100 % | 0.000 | 0.897 |
++| 12 m/s | 9.1 % | 0.472 [+0.408, +0.526] | 0.887 |
++| 17 kt | 18.5 % | 0.480 [+0.456, +0.505] | 0.895 |
++
++**E4. Los efectos son aditivos.** v0.2 → M1 cuesta −0.009 en PSS clase 5 con
++cualquier viento.
++
++**Qué queda para v0.3.** Las declaratorias son un registro ruidoso y muy general
++de los impactos. Por eso estos resultados se toman como evidencia ordinal, no
++como calibración final. En v0.3 la lluvia se define por periodo de retorno y el
++viento por umbrales absolutos (Saffir-Simpson); ver `docs/plan_v0.3.md`.
++
+ ## Referencias
+ 
+ - Ferro, C. A. T. y Stephenson, D. B. (2011). Extremal Dependence Indices: improved
+diff --git a/docs/plan_v0.3.md b/docs/plan_v0.3.md
+new file mode 100644
+index 0000000..f80da51
+--- /dev/null
++++ b/docs/plan_v0.3.md
+@@ -0,0 +1,150 @@
++# Plan de ITCHI v0.3: peligrosidad climatológica de los ciclones tropicales en México
++
++**Objetivo.** Convertir ITCHI en una medida de **peligro** de los ciclones
++tropicales que afectaron México entre 2000 y 2025, en malla y por municipio. El
++peligro se define por la rareza climatológica de la lluvia y por umbrales
++físicos absolutos de viento, no por la calibración contra declaratorias.
++Después, medir con cuánta anticipación lo detectan los pronósticos (AIFS).
++
++**Versión.** v0.3.0. Cambia la definición del peligro (periodos de retorno,
++viento absoluto y número de niveles distinto de SIAT-CT), así que no es un
++parche de v0.2. Se desarrolla en la rama `dev/v0.3` desde `main` con v0.2.1.
++
++---
++
++## 1. Decisiones de partida
++
++| # | Decisión | Por qué |
++|---|---|---|
++| P1 | El peligro por lluvia es la **rareza local**: periodo de retorno T (años) de R6, R24 y R72 por píxel, con todas las causas de lluvia (MSWEP V3, mayo–noviembre, 2000–2025) | Es comparable entre regiones y no depende de los impactos. El P95 de 6 h se alcanza unas 3 veces por temporada en cada píxel; no es un «máximo» |
++| P2 | Las declaratorias son solo una **prueba ordinal**: el nivel k+1 debe tener más declaratorias que el nivel k | Son un registro de impactos ruidoso y muy general; el subregistro sesga los umbrales absolutos, pero menos el orden |
++| P3 | El sesgo de los pronósticos se corrige con la **climatología del propio modelo** (percentiles o periodos de retorno de AIFS por anticipación), no bajando los umbrales del índice | La definición del peligro observado no cambia. Bajar el umbral de *alerta* para avisar antes es una decisión de la capa de pronóstico |
++| P4 | El viento usa **umbrales absolutos** de Saffir-Simpson aplicados al viento local de cada píxel (perfil W06 por cuadrante, calibrado a R34), en niveles escalonados | v0.2 normaliza con la Vmax de cada tormenta (D9): una tormenta de 40 kt llega a H_W = 1 |
++| P5 | El área de influencia es ROCLOUD por cuadrante con piso R_W06 (si falta, vale 0 o es menor, se usa R_W06); R_W06 también marca el fin de la cola de viento | Igual que en v0.2.1 |
++| P6 | El número de niveles no está fijo (de 2 a 5); se elige con criterios explícitos (sección 3, F3) | Los niveles SIAT-CT son de comunicación operativa, no de peligro |
++| P7 | Se separan **datos** y **esquema**: primero se guarda un catálogo de variables físicas bajo cada ciclón y después se evalúa cualquier esquema sobre él | Así se pueden probar umbrales y niveles en segundos, sin releer MSWEP |
++
++## 2. Lo que ya existe (v0.2.1)
++
++- **Código:** `compute_itchi_snapshot_v02` (malla, por tiempo sinóptico); tabla de
++  clases P6 × R24 × A72; perfiles W06 y radios R_W06 (PA21); regla ROCLOUD con
++  piso R_W06; configuración por overlays (`configs/experiments/`).
++- **Datos procesados:**
++  - acumulados de 6 h de MSWEP V3 en `D:/MSWEP_V316_6H/mswep_v3_6h_AAAA.nc`;
++  - percentiles de 6, 24 y 72 h (`p_wet_raw`) en
++    `data/processed/mswep_v3_{d}h_percentiles_may_nov.nc`;
++  - pares y pasos municipio–ciclón dentro de R_W06 en
++    `outputs/diagnostics/declaratorias_6h/` (381 929 pares; 2 977 768 pasos);
++  - declaratorias asociadas a ciclones por fecha.
++- **Resultados que orientan v0.3:**
++  - verificación v0.2 (`docs/verification_v02.md`);
++  - Bloque 1 (`docs/experimento_b1.md`, sección 9): P95 como máximo no mejora la
++    discriminación; R24 y A72 importan por encima de P95; cortar la cola de
++    viento recupera la clase 1.
++- **Escrito para v0.3, todavía sin correr con MSWEP:**
++  - `itchi.return_periods`, `scripts/periodos_retorno.py`,
++    `scripts/figuras_retorno.py` y `notebooks/third test/10_periodos_retorno.ipynb`;
++  - documentación en `docs/periodos_retorno.md`.
++
++## 3. Fases
++
++El orden de trabajo de origen contaba dos veces los umbrales de periodo de
++retorno (1a y 2). Aquí son una sola fase, F1.
++
++### F1. Umbrales climatológicos de lluvia (orden de trabajo 1a y 2)
++
++- **Qué hace.** Por píxel y duración (6, 24, 72 h):
++  - máximos estacionales + GEV → periodo de retorno T;
++  - picos independientes + GPD → intervalo de recurrencia R, que sirve también
++    por debajo de un año.
++- **Entregable.**
++  - `data/processed/mswep_v3_return_periods_may_nov.nc`;
++  - figuras R1–R5 y tabla resumen (notebook 10), incluida la rareza real de P75,
++    P90, P95 y P99.
++- **Terminado cuando:**
++  - GEV y POT coinciden en T = 10 años (R4);
++  - la forma de la cola (R5) es razonable;
++  - se acordaron con la tutora la separación entre eventos (48 h y 96 h) y el
++    número de picos por temporada (3).
++- **Decisiones abiertas:**
++  - ajuste regional si ξ por píxel es ruido;
++  - hasta qué T se confía (con 26 temporadas, unos 10 años).
++
++### F2. Catálogo de estados bajo ciclones (orden de trabajo 1b)
++
++- **Qué hace.** Recorre las 13 599 posiciones de 2000–2025. Para cada posición
++  y cada píxel o municipio dentro del área de influencia guarda:
++  - P6, R24 y A72 (mm), con su T y R;
++  - el viento local V (kt): W06 calibrado a R34, por cuadrante;
++  - la distancia, el cuadrante, R34_q, ROCLOUD_q, R_W06_q y R_attr_q;
++  - la identificación del ciclón, el tiempo, la Vmax y la RMW.
++
++  No se calcula ningún peligro.
++- **Requiere:**
++  - agregación píxel → municipio ponderada por fracción de área (Bloque 2a),
++    guardando máximo, media y percentiles del municipio;
++  - viento local por cuadrante en todos los pasos.
++- **Tamaño.**
++  - Por municipio: ~3 millones de filas.
++  - En malla: hay que restringir a los píxeles terrestres de México
++    (~16 000 a 0.1°), unas 4 × 10⁷ filas. Se guarda en Parquet o Zarr
++    particionado por año, no en CSV.
++- **Terminado cuando** el catálogo reproduce, para Cristóbal 2020 y Odile 2014,
++  los campos de `compute_itchi_snapshot_v02` (prueba de consistencia).
++
++### F3. Esquemas sobre el catálogo (orden de trabajo 1c, 3 y 4)
++
++- **Lluvia.** Nivel = máximo sobre las duraciones del nivel de T, con fronteras
++  en años. Las fronteras exactas se deciden con F1 y la prueba ordinal.
++- **Viento** (niveles escalonados, Saffir-Simpson local). Ejemplo con 4 niveles:
++
++  | Nivel | Viento local |
++  |---|---|
++  | 0 | < 34 kt |
++  | 1 | Tormenta tropical (34–63 kt) |
++  | 2 | Categorías 1–2 (64–95 kt) |
++  | 3 | Huracán mayor (≥ 96 kt, corte operativo de NHC) |
++
++  La cola por debajo de 34 kt se corta en 17 kt o en 12 m/s; falta justificarlo
++  físicamente. El Bloque 1 dio PSS de clase 1 de 0.480 con 17 kt y 0.472 con
++  12 m/s.
++- **Combinación.** Nivel ITCHI = máximo del nivel de lluvia y el de viento. Es
++  más fácil de comunicar que la unión probabilística de v0.2.
++- **Número de niveles** (de 2 a 5), con tres criterios:
++  1. distinguibilidad: se fusionan niveles contiguos cuyos intervalos se traslapan
++     (P(D) con bootstrap por ciclón, o T);
++  2. ganancia de información: RPS o información mutua al agregar un nivel;
++  3. predictibilidad con AIFS (se evalúa en F5).
++- **Validación externa** (solo ordinal):
++  - declaratorias asociadas por nombre de tormenta (D5);
++  - deslizamientos, con el caso de Manuel 2013 y La Pintada;
++  - casos Cristóbal 2020, Odile 2014, Emily 2005, Alex 2010 y Patricia 2015.
++
++### F4. Climatología de ITCHI (orden de trabajo 1d, producto final)
++
++- Por municipio y en malla, para el esquema elegido:
++  - número de ciclones con nivel ≥ k (2000–2025);
++  - periodo de retorno de cada nivel;
++  - mapas de peligrosidad;
++  - horas en alerta por evento (D7).
++- Produce el artículo de peligrosidad de los ciclones tropicales en México.
++
++### F5. Pronóstico (orden de trabajo 5)
++
++- Percentiles y periodos de retorno de los hindcasts de AIFS 1.1 (2000–2025) por
++  anticipación (climatología del propio modelo, P3).
++- ITCHI pronosticado por anticipación contra ITCHI observado (F4):
++  - con cuánta anticipación se detecta cada nivel;
++  - en qué niveles el pronóstico tiene habilidad.
++
++## 4. Decisiones para discutir con la tutora
++
++1. Separación entre eventos y picos por temporada en F1.
++2. Fronteras de los niveles de lluvia en años.
++3. Corte de la cola de viento (17 kt o 12 m/s) y agrupación de las categorías
++   Saffir-Simpson.
++4. Agregación municipal: máximo, fracción de área en nivel ≥ k o cuantil alto.
++5. Combinación por máximo de niveles en lugar de la unión probabilística.
++6. Viento sobre tierra: el «viento equivalente en terreno abierto» (como
++   Saffir-Simpson) frente a una reducción por rugosidad o el decaimiento tierra
++   adentro.
+diff --git a/pyproject.toml b/pyproject.toml
+index da520a2..fd356ef 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "itchi-core"
+-version = "0.2.0"
++version = "0.2.1"
+ description = "Core computational package for the Integrated Tropical Cyclone Hazard Index (v0.2)"
+ readme = "README.md"
+ requires-python = ">=3.11"
+diff --git a/scripts/declaratorias_6h.py b/scripts/declaratorias_6h.py
+index d1c8af9..8b666e6 100644
+--- a/scripts/declaratorias_6h.py
++++ b/scripts/declaratorias_6h.py
+@@ -445,10 +445,21 @@ def dur_step_stats(arr: np.ndarray, qpix: np.ndarray, imax6: np.ndarray, name: s
+     })
+ 
+ 
++def local_path(path: str | Path) -> Path:
++    """
++    Ruta de Windows ("D:/...") a su montaje en WSL/Linux ("/mnt/d/..."); sin
++    cambios en Windows o si la ruta ya es de Linux.
++    """
++    s = str(path).replace("\\", "/")
++    if os.name != "nt" and re.match(r"^[A-Za-z]:/", s):
++        return Path(f"/mnt/{s[0].lower()}") / s[3:]
++    return Path(s)
++
++
+ def open_6h_year(cfg: Config, year: int) -> xr.DataArray | None:
+ 
+-    path = os.path.join(cfg.mswep_6h_dir, f"mswep_v3_6h_{year}.nc")
+-    if not os.path.exists(path):
++    path = local_path(cfg.mswep_6h_dir) / f"mswep_v3_6h_{year}.nc"
++    if not path.exists():
+         return None
+ 
+     return xr.open_dataset(path)["precipitation"]
+diff --git a/scripts/negativos_w06.py b/scripts/negativos_w06.py
+index dc0b7be..2fd19d9 100644
+--- a/scripts/negativos_w06.py
++++ b/scripts/negativos_w06.py
+@@ -236,6 +236,12 @@ def rain_by_step(cfg: ConfigW06, pairs: pd.DataFrame) -> pd.DataFrame:
+         rec["lat_pmax"], rec["lon_pmax"] = lat[gp // nx], lon[gp % nx]
+         out.append(pd.DataFrame(rec))
+ 
++    if not out:
++        carpeta = d6.local_path(cfg.mswep_6h_dir)
++        raise FileNotFoundError(
++            f"No se leyó ningún año de acumulados de 6 h en {carpeta} "
++            f"(se buscan mswep_v3_6h_AAAA.nc). Revisa que la carpeta exista y que el disco "
++            f"esté montado (en WSL: ls {carpeta}), o cambia Config.mswep_6h_dir.")
+     return pd.concat(out, ignore_index=True)
+ 
+ 
+diff --git a/src/itchi/constants.py b/src/itchi/constants.py
+index 67f193a..fd9530b 100644
+--- a/src/itchi/constants.py
++++ b/src/itchi/constants.py
+@@ -12,7 +12,7 @@ from __future__ import annotations
+ # ============================================================
+ 
+ PROJECT_NAME: str = "itchi-core"
+-ITCHI_VERSION: str = "0.2.0"
++ITCHI_VERSION: str = "0.2.1"
+ 
+ 
+ # ============================================================

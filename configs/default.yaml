@@ -1,11 +1,20 @@
 # ============================================================
 # ITCHI Core Configuration
 # Integrated Tropical Cyclone Hazard Index v0.2
+#
+# Which function uses these values:
+# - pipeline.compute_itchi_snapshot_v02 (v0.2 entry point). Its keyword
+#   defaults equal this file; itchi.config.itchi_v02_settings_from_config()
+#   turns this file into those keyword arguments, and
+#   tests/test_v02_snapshot.py checks that both stay equal.
+# - pipeline.compute_itchi_snapshot_from_grid keeps the v0.1 defaults
+#   (Q90/Q95/Q99 ramp, wind only inside R34) for backward compatibility and
+#   does not read this file.
 # ============================================================
 
 project:
   name: "itchi-core"
-  version: "0.2.0"
+  version: "0.2.1"
   description: "Core computational workflow for ITCHI v0.2"
 
 
@@ -38,15 +47,15 @@ time:
 
   target_frequency_hours: 6
 
-  # Important:
-  # Precipitation is handled as snapshots, not temporal accumulations.
-  precipitation_time_handling: "snapshot"
+  # v0.2: precipitation enters as the 6-h accumulation that ends at the
+  # synoptic time T, P6 = (T-6h, T]. R24 = (T-24h, T] and the exclusive
+  # antecedent A72 = (T-78h, T-6h] only escalate H_P.
+  precipitation_time_handling: "accumulation"
+  precipitation_window: "(T-6h, T]"
 
-  # Temporal alignment between cyclone time and precipitation snapshot
-  temporal_alignment: "nearest"
-
-  # Maximum allowed difference between cyclone time and precipitation snapshot
-  max_time_tolerance_hours: 1.5
+  # The accumulation window must end exactly at T (no nearest-time matching).
+  temporal_alignment: "window_end"
+  max_time_tolerance_hours: 0.0
 
 
 # ============================================================
@@ -60,8 +69,8 @@ precipitation:
   # This can be changed depending on the dataset.
   variable_name: "precipitation"
 
-  # ITCHI v0.1 uses precipitation snapshots.
-  temporal_support: "snapshot"
+  # v0.2: 6-h accumulation ending at T (see time.precipitation_window).
+  temporal_support: "accumulation_6h"
 
   # Units must be checked for each dataset.
   # For downscaled products, the field should be comparable with the climatology.
@@ -77,7 +86,12 @@ precipitation:
   # (precipitation.compute_precipitation_matrix_hazard). Calibrated with
   # municipality-cyclone pairs (scripts/negativos_w06.py); discrete rule:
   # P6 in P95-P99 with R24 >= P95 and A72 >= P75 -> maximum.
-  hazard_model: "matrix_v02"          # "ramp_v01" | "matrix_v02"
+  # "matrix_v02" (precipitation.compute_precipitation_matrix_hazard) or
+  # "class_table" (precipitation.compute_precipitation_class_table_hazard,
+  # block precipitation.class_table below; Block 1 experiments in
+  # configs/experiments/b1/). "ramp_v01" is the v0.1 Q90/Q95/Q99 ramp of
+  # compute_itchi_snapshot_from_grid.
+  hazard_model: "matrix_v02"          # "ramp_v01" | "matrix_v02" | "class_table"
   matrix_v02:
     snapshot_hours: 6                 # P6(T)  = precipitation in (T-6h, T]
     p6_nodes: ["Q75", "Q90", "Q95", "Q99"]
@@ -90,7 +104,19 @@ precipitation:
     climatology_6h: "data/processed/mswep_v3_6h_percentiles_may_nov.nc"
     climatology_24h: "data/processed/mswep_v3_24h_percentiles_may_nov.nc"
     climatology_72h: "data/processed/mswep_v3_72h_percentiles_may_nov.nc"
-    climatology_variable: "p_wet"
+    # p_wet_raw: wet-window percentiles without the sufficiency filter; it is
+    # the variable used for every v0.2 result (notebooks 05-08,
+    # docs/verification_v02.md). p_wet is NaN where the effective sample is
+    # too small (e.g. 72-h P99).
+    climatology_variable: "p_wet_raw"
+    # H_P where P6 or a used 6-h percentile is NaN (e.g. outside MSWEP or a
+    # pixel without climatology): 0.0 = no precipitation hazard (as in
+    # notebooks 05-08); null keeps NaN.
+    nan_hazard_value: 0.0
+
+  # Class table P6 x R24 x A72, used only with hazard_model = "class_table".
+  # Format in precipitation.py (PRECIP_TABLES_B1) and docs/experimento_b1.md.
+  class_table: null
 
   epsilon: 1.0e-6
 
@@ -137,6 +163,9 @@ geometry:
   # Main version uses quadrant-specific radii.
   use_quadrant_radii: true
 
+  # Filling of missing R34 quadrants (and of ROCLOUD with mode "never")
+  radius_fill_strategy: "mean_available"
+
   # Expected quadrant order
   quadrant_convention:
     - "RNE"
@@ -147,8 +176,12 @@ geometry:
   # R34 defines the direct region.
   direct_region_radius: "R34"
 
-  # ROCLOUD defines the external attribution limit.
+  # ROCLOUD defines the external attribution limit, with R_W06 as a floor by
+  # quadrant (parametric_radii.attribution_radius_mode = "floor"):
+  # R_attr_q = R_W06_q where ROCLOUD_q is missing (or 0, no detection) or
+  # smaller than R_W06_q; otherwise ROCLOUD_q. Never below R_direct_q.
   outer_attribution_radius: "ROCLOUD"
+  attribution_floor: "R_W06"
 
 
 # ============================================================
@@ -158,13 +191,23 @@ geometry:
 wind:
   enabled: true
 
-  # v0.1: wind hazard only inside R34. v0.2: W06 tail down to the attribution radius.
+  # v0.1: wind hazard only inside R34. v0.2: W06 tail that ends at R_W06.
   model: "w06_tail"                   # "v01" | "w06_tail" (pipeline wind_model)
-  active_region: "inside_attribution" # v0.1: "inside_r34"
+  active_region: "inside_r_w06"       # v0.1: "inside_r34"
 
   # v0.2 tail: H_W = h34 + (1 - h34)(V - 34)/(Vmax - 34) inside R_direct,
-  # H_W = h34 (V - V_out)/(34 - V_out) outside, V_out = wind at the attribution radius.
+  # H_W = h34 (V - V_out)/(34 - V_out) outside, V_out = wind at R_W06_q.
+  # R_W06 bounds the wind only; the attribution radius (ROCLOUD with R_W06
+  # floor) bounds the indirect precipitation.
   tail_h34: 0.2
+  tail_end_radius: "R_W06"
+
+  # Optional cut of the tail at a wind speed (kt), e.g. 17 (decision D1 in
+  # docs/verification_v02.md). null = tail ends at R_W06. The tail never
+  # extends beyond R_W06: V_out = max(V(R_W06_q), tail_end_wind_kt).
+  tail_end_wind_kt: null
+  # Same cut in m/s (e.g. 12.0 = 23.3 kt); give at most one of the two.
+  tail_end_wind_ms: null
 
   # Tropical-storm-force wind threshold
   reference_wind_kt: 34.0
@@ -254,12 +297,28 @@ parametric_radii:
   # Outer-size threshold in m s-1: 2.0 (PA21) or 2.572 (5 kt, Knaff et al. 2014)
   outer_threshold_ms: 2.0
 
-  # Role of the W06 outer radius as attribution radius:
-  # "never" | "fallback" (only where ROCLOUD is missing) | "always"
-  attribution_radius_mode: "fallback"
+  # Role of R_W06 in the attribution radius, by quadrant:
+  #   "never"    ROCLOUD only; missing quadrants filled with the mean of the
+  #              valid ones (v0.1 behaviour)
+  #   "fallback" R_W06 only where ROCLOUD is missing
+  #   "floor"    R_W06 where ROCLOUD is missing or smaller (v0.2 default)
+  #   "always"   R_W06 everywhere (setting of the v0.2 verification studies)
+  attribution_radius_mode: "floor"
 
-  # Use W06 R34 as fallback_direct_radius_km when observed R34 is missing
+  # Use the parametric R34 (r_w06 settings below) as fallback_direct_radius_km
+  # when observed R34 is missing
   use_as_direct_fallback: true
 
   # Wind hazard profile: "rankine" (wind.py, v0.1) | "w06" (v0.2, with tail)
   wind_profile: "w06"
+
+  # Definition of R_W06 in compute_itchi_snapshot_v02: radius where the W06
+  # profile falls to outer_threshold_ms. PA21 configuration (empirical Rmax,
+  # no R34 calibration), as in the v0.2 verification (pa21_r2_km). The keys
+  # above (rmax_variant, use_observed_rmw, calibrate_to_r34) belong to the
+  # parametric radii of the v0.1 notebooks and are not used for R_W06.
+  r_w06:
+    rmax_variant: "pa21"
+    use_observed_rmw: false
+    calibrate_to_r34: false
+    outer_threshold_ms: 2.0

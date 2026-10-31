@@ -39,6 +39,7 @@ Salidas (outputs/diagnostics/declaratorias_6h/):
 
 Ejecutar desde scripts/ (después de declaratorias_6h.py):
     python negativos_w06.py
+    python negativos_w06.py --guardar-pasos     # además pasos_municipio_ct_w06.csv.gz
 """
 
 from __future__ import annotations
@@ -72,6 +73,10 @@ class ConfigW06(d6.Config):
     v_outer_ms: float = 2.0          # PA21
     rmax_variant: str = "pa21"       # como H.augment_track
     months: tuple = (5, 6, 7, 8, 9, 10, 11)
+    # Guarda también un renglón por (municipio, CT, paso) con la lluvia en el píxel
+    # del máximo de 6 h y la distancia/vmax del CT (pasos_municipio_ct_w06.csv.gz).
+    # Lo usa scripts/experimento_b1.py para evaluar el máximo del índice durante el evento.
+    guardar_pasos: bool = False
 
 
 # ============================================================================
@@ -107,6 +112,7 @@ def pairs_inside(tracks: pd.DataFrame, mun_pts: pd.DataFrame) -> pd.DataFrame:
             "CT": g["CT"].to_numpy()[i], "time": g["time"].to_numpy()[i],
             "CVEGEO": mun_pts["CVEGEO"].to_numpy()[j], "dist_km": dist[i, j],
             "r_w06_km": g["r_w06_km"].to_numpy()[i], "vmax_kt": g["vmax_kt"].to_numpy()[i],
+            "lat_ct": g["lat_ct"].to_numpy()[i],
         }))
     return pd.concat(out, ignore_index=True)
 
@@ -230,6 +236,12 @@ def rain_by_step(cfg: ConfigW06, pairs: pd.DataFrame) -> pd.DataFrame:
         rec["lat_pmax"], rec["lon_pmax"] = lat[gp // nx], lon[gp % nx]
         out.append(pd.DataFrame(rec))
 
+    if not out:
+        carpeta = d6.local_path(cfg.mswep_6h_dir)
+        raise FileNotFoundError(
+            f"No se leyó ningún año de acumulados de 6 h en {carpeta} "
+            f"(se buscan mswep_v3_6h_AAAA.nc). Revisa que la carpeta exista y que el disco "
+            f"esté montado (en WSL: ls {carpeta}), o cambia Config.mswep_6h_dir.")
     return pd.concat(out, ignore_index=True)
 
 
@@ -340,6 +352,14 @@ def run(cfg: ConfigW06 = ConfigW06()) -> dict:
     ver = verify(pr)
 
     pr.to_csv(os.path.join(cfg.out_dir, "pares_municipio_ct_w06.csv.gz"), index=False, float_format="%.3f")
+    if cfg.guardar_pasos:
+        cols = ["CVEGEO", "CT", "time", "dist_km", "r_w06_km", "vmax_kt", "lat_ct", "P6_max",
+                "R24_en_pico6", "A72_en_pico6", "lat_pmax", "lon_pmax"]
+        pasos = steps.merge(rain, on=["CVEGEO", "time"], how="inner")
+        pasos = pasos[pasos["P6_max"].notna()][[c for c in cols if c in pasos]]
+        pasos.to_csv(os.path.join(cfg.out_dir, "pasos_municipio_ct_w06.csv.gz"), index=False,
+                     float_format="%.3f")
+        print(f"pasos guardados: {len(pasos):,}")
     ver.to_csv(os.path.join(cfg.out_dir, "verificacion_niveles_w06.csv"), index=False, float_format="%.4f")
     fuera.to_csv(os.path.join(cfg.out_dir, "positivos_fuera_w06.csv"), index=False)
 
@@ -359,4 +379,9 @@ def run(cfg: ConfigW06 = ConfigW06()) -> dict:
 
 
 if __name__ == "__main__":
-    out = run(ConfigW06())
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    ap.add_argument("--guardar-pasos", action="store_true",
+                    help="guarda pasos_municipio_ct_w06.csv.gz (para experimento_b1.py)")
+    out = run(ConfigW06(guardar_pasos=ap.parse_args().guardar_pasos))
