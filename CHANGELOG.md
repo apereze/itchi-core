@@ -7,6 +7,25 @@ and this project uses semantic versioning principles while the API is under acti
 
 ---
 
+## [Unreleased] - 0.3.0
+
+Development line v0.3 (`docs/plan_v0.3.md`): hazard defined by climatological
+rarity (return periods) and absolute wind thresholds, on a catalog of physical
+states under every tropical cyclone 2000-2025.
+
+### Added
+
+- F1, rainfall return periods (`docs/periodos_retorno.md`):
+  `itchi.return_periods` (running sums, declustered peaks, top-K, sample
+  L-moments, GEV and GPD by L-moments, return levels and periods,
+  conversions; NumPy only); `scripts/periodos_retorno.py` (seasonal maxima
+  and the K largest independent peaks of 6/24/72-h MSWEP V3 per pixel,
+  `mswep_v3_return_periods_may_nov.nc`); `scripts/figuras_retorno.py` and
+  `notebooks/third test/10_periodos_retorno.ipynb`;
+  `tests/test_return_periods.py`, `tests/test_periodos_retorno_script.py`.
+
+---
+
 ## [0.2.1] - 2026-10-30
 
 Consistency fixes, a single v0.2 entry point and the Block 1 experiments
