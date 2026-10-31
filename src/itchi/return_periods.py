@@ -129,6 +129,29 @@ def update_top_k(top: np.ndarray | None, candidates: np.ndarray, k: int) -> np.n
     return np.where(np.isfinite(filled), filled, np.nan)
 
 
+def count_at_or_above(peaks: np.ndarray, thresholds: np.ndarray) -> np.ndarray:
+    """
+    Number of peaks >= each threshold along axis 0.
+
+    Parameters
+    ----------
+    peaks : numpy.ndarray
+        (time, ...) peak values, NaN where there is no peak.
+    thresholds : numpy.ndarray
+        (n_thresholds, ...) thresholds per pixel; NaN gives a count of 0
+        (mask afterwards).
+
+    Returns
+    -------
+    numpy.ndarray
+        (n_thresholds, ...) integer counts.
+    """
+    p = np.asarray(peaks, dtype=float)
+    thr = np.asarray(thresholds, dtype=float)
+    with np.errstate(invalid="ignore"):
+        return (p[None, ...] >= thr[:, None, ...]).sum(axis=1)
+
+
 def seasonal_maximum(x: np.ndarray, min_valid_fraction: float = 0.9) -> np.ndarray:
     """
     Maximum along axis 0; NaN if less than min_valid_fraction of the steps

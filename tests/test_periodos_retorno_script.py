@@ -105,3 +105,37 @@ def test_compute_missing_year_and_gaps() -> None:
 def test_compute_without_files_raises() -> None:
     with pytest.raises(FileNotFoundError):
         pr.compute(_cfg(), lambda year: None, verbose=False)
+
+
+def test_compute_counts_events_above_thresholds() -> None:
+    read, data = _reader(seed=2)
+    cfg = _cfg(durations=(6, 24))
+    rng = np.random.default_rng(3)
+    thr = {d: rng.uniform(1.0, 30.0, (3, LAT.size, LON.size)).astype(np.float32) for d in cfg.durations}
+    thr[6][1, 0, 1] = np.nan                                # umbral faltante -> NaN
+    res = pr.compute(cfg, read, verbose=False, thresholds=lambda lat, lon: thr)
+    for d in cfg.durations:
+        cnt = np.zeros(thr[d].shape)
+        for year in cfg.years:
+            pk = declustered_peaks(running_sum(data[year][3].astype(float), d // 6), cfg.separacion_h[d] // 6,
+                                   cfg.wet)
+            cnt += (pk[None] >= thr[d][:, None]).sum(axis=1)
+        expected = np.where(np.isfinite(thr[d]), cnt / 26.0, np.nan)
+        np.testing.assert_allclose(res["fits"][d]["events_above_pct"], expected, rtol=1e-6)
+        assert res["fits"][d]["full_threshold"].all()
+
+
+def test_full_threshold_flag_arid_pixel() -> None:
+    read, data = _reader(seed=4)
+
+    def arid(year):
+        t, la, lo, x = read(year)
+        x = x.copy()
+        x[:, 2, 1] = 0.0
+        x[[10, 400], 2, 1] = 5.0                            # dos eventos por temporada < K+1 = 79
+        return t, la, lo, x
+
+    res = pr.compute(_cfg(durations=(6,)), arid, verbose=False)
+    full = res["fits"][6]["full_threshold"]
+    assert not full[2, 1] and full[0, 0]
+    assert res["fits"][6]["gpd"]["rate"][2, 1] < 3.0 or np.isnan(res["fits"][6]["gpd"]["rate"][2, 1])

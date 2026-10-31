@@ -4,9 +4,15 @@ ITCHI-CORE · Figuras de los periodos de retorno (notebooks/third test/10_period
     fig_r1_curva_pixel     cómo se lee un periodo de retorno: máximos estacionales,
                            GEV y POT en ciudades de referencia
     fig_r2_mapas_niveles   lluvia con periodo de retorno de 2 y 10 años por duración
-    fig_r3_rareza_percentil cada cuánto se alcanza el P95 y el P99 de cada píxel
-    fig_r4_consistencia    GEV contra POT en T = 10 años (deben coincidir)
-    fig_r5_forma           parámetro de forma y píxeles con forma acotada (control)
+    fig_r3_rareza_percentil cada cuánto se alcanzan P75-P99 de cada píxel (eventos
+                           independientes contados; GPD si no hay conteo)
+    fig_r4_consistencia    GEV contra POT en T = 10 años (criterio fijado en
+                           docs/periodos_retorno.md)
+    fig_r5_forma           parámetro de forma y su dispersión frente al ruido de muestreo
+
+Las estadísticas se calculan sobre el territorio de México si se llama antes a
+agregar_mascara (polígonos municipales); si no, sobre la caja MEXICO_BOX, que
+incluye mar y países vecinos.
 
 Las funciones reciben un RP: arreglos NumPy con las mismas dimensiones que el
 archivo de scripts/periodos_retorno.py (load_rp lo lee; from_result lo arma
@@ -41,6 +47,12 @@ CIUDADES = {
     "Monterrey": (25.67, -100.31), "La Paz": (24.14, -110.31), "Ciudad de México": (19.43, -99.13),
 }
 MEXICO_BOX = dict(lat=(14.0, 33.5), lon=(-118.5, -86.0))
+# Desviación estándar de xi por muestreo con 26 temporadas y modelo exacto (Monte Carlo,
+# L-momentos, K = 3 por temporada): GEV ~0.17, GPD ~0.13. Referencia para R5.
+SD_XI_MUESTREO = {"gev": 0.17, "gpd": 0.13}
+# Criterio de R4, fijado antes de ver los datos: con modelo exacto la diferencia relativa
+# |POT - GEV| / GEV en T = 10 años tiene mediana ~0.025 y P90 ~0.06 (Monte Carlo).
+CRITERIO_R4 = {"mediana": 0.05, "p90": 0.12}
 plt.rcParams.update({"figure.dpi": 110, "font.size": 10, "axes.spines.top": False,
                      "axes.spines.right": False})
 
@@ -54,9 +66,25 @@ class RP:
     R: np.ndarray
     seasons: np.ndarray
     data: dict
+    quantiles: np.ndarray | None = None
+    mask: np.ndarray | None = None          # True en territorio de México (agregar_mascara)
 
     def get(self, var: str, duration: int) -> np.ndarray:
         return self.data[var][self.durations.index(duration)]
+
+    def region(self) -> np.ndarray:
+        """Píxeles para las estadísticas: México si hay máscara, si no la caja."""
+        if self.mask is not None:
+            return self.mask
+        out = np.zeros((self.lat.size, self.lon.size), bool)
+        out[self.box()] = True
+        return out
+
+    def pot_ok(self, duration: int) -> np.ndarray:
+        """Región y umbral GPD en la cola (K+1 picos); sin la bandera, solo la región."""
+        if "gpd_full_threshold" not in self.data:
+            return self.region()
+        return self.region() & (self.get("gpd_full_threshold", duration) == 1)
 
     def pixel(self, lat: float, lon: float) -> tuple[int, int]:
         return int(np.abs(self.lat - lat).argmin()), int(np.abs(self.lon - lon).argmin())
@@ -68,7 +96,8 @@ class RP:
 
 
 VARS = ("seasonal_max", "n_seasons", "gev_xi", "gev_sigma", "gev_mu", "gev_xi_clipped", "gpd_u",
-        "gpd_sigma", "gpd_xi", "gpd_rate", "gpd_xi_clipped", "rl_gev", "rl_pot", "rl_pot_emp")
+        "gpd_sigma", "gpd_xi", "gpd_rate", "gpd_xi_clipped", "rl_gev", "rl_pot", "rl_pot_emp",
+        "gpd_full_threshold", "events_above_pct")
 
 
 def load_rp(path) -> RP:
@@ -81,7 +110,25 @@ def load_rp(path) -> RP:
         if "peaks" in ds:
             data["peaks"] = ds["peaks"].values[..., order, :]
         return RP(lat[order], ds["lon"].values, [int(d) for d in ds["duration"].values],
-                  ds["T"].values, ds["R"].values, ds["season"].values, data)
+                  ds["T"].values, ds["R"].values, ds["season"].values, data,
+                  quantiles=ds["quantile"].values if "quantile" in ds.coords else None)
+
+
+def agregar_mascara(rp: RP, shp) -> RP:
+    """rp.mask = centros de píxel dentro de los polígonos municipales (p. ej. mun23gw)."""
+    import geopandas as gpd
+    import shapely
+
+    shp = Path(shp)
+    if not shp.exists():
+        print(f"Aviso: no existe {shp}; las estadísticas usan la caja MEXICO_BOX (incluye mar)")
+        return rp
+    g = gpd.read_file(shp).to_crs(4326)
+    geom = g.union_all() if hasattr(g, "union_all") else g.unary_union   # geopandas < 1.0
+    lon2, lat2 = np.meshgrid(rp.lon, rp.lat)
+    rp.mask = shapely.contains_xy(geom, lon2, lat2)
+    print(f"Máscara de México: {rp.mask.sum()} píxeles")
+    return rp
 
 
 def from_result(res: dict, cfg) -> RP:
@@ -95,11 +142,33 @@ def from_result(res: dict, cfg) -> RP:
             data[f"{fam}_{k}"] = np.stack([f[d][fam][k] for d in durs]).astype(float)
     for k in ("rl_gev", "rl_pot", "rl_pot_emp"):
         data[k] = np.stack([f[d][k] for d in durs])
+    data["gpd_full_threshold"] = np.stack([f[d]["full_threshold"] for d in durs]).astype(int)
+    has_q = all("events_above_pct" in f[d] for d in durs)
+    if has_q:
+        data["events_above_pct"] = np.stack([f[d]["events_above_pct"] for d in durs])
     lat = np.asarray(st["lat"])
     order = np.argsort(lat)
     data = {k: v[..., order, :] for k, v in data.items()}
     return RP(lat[order], np.asarray(st["lon"]), durs, np.asarray(cfg.T_gev), np.asarray(cfg.R_pot),
-              np.asarray(res["years"]), data)
+              np.asarray(res["years"]), data,
+              quantiles=np.asarray(cfg.percentiles_q) if has_q else None)
+
+
+def recurrencia_percentil(rp: RP, d: int, q: str, x: np.ndarray | None = None) -> tuple[np.ndarray, str]:
+    """
+    Intervalo medio (años) entre eventos independientes con pico >= Pq.
+
+    Usa el conteo directo (events_above_pct) si existe; si no, la GPD, que solo
+    resuelve por encima del umbral u (más frecuente: 0.1 como marcador).
+    """
+    if rp.quantiles is not None and "events_above_pct" in rp.data:
+        iq = int(np.argmin(np.abs(rp.quantiles - float(q[1:]) / 100.0)))
+        rate = rp.get("events_above_pct", d)[iq]
+        with np.errstate(divide="ignore"):
+            return np.where(np.isfinite(rate), 1.0 / rate, np.nan), "conteo"
+    u, s, xi, rate = (rp.get(f"gpd_{k}", d) for k in ("u", "sigma", "xi", "rate"))
+    Rq = pot_recurrence_interval(x, u, s, xi, rate)
+    return np.where(np.isfinite(x) & np.isfinite(u) & (x < u), 0.1, Rq), "GPD"
 
 
 # ============================================================================
@@ -150,36 +219,34 @@ def fig_r2_mapas_niveles(rp: RP, T_show=(2.0, 10.0)):
     return fig
 
 
-def fig_r3_rareza_percentil(rp: RP, percentiles: dict, labels=("Q95", "Q99")):
+def fig_r3_rareza_percentil(rp: RP, percentiles: dict | None = None, labels=("Q75", "Q90", "Q95", "Q99")):
     """
     Intervalo de recurrencia (años) de los percentiles actuales de cada píxel.
 
-    percentiles: {duración: {"Q95": campo (lat, lon), ...}} en la malla de rp.
+    percentiles: {duración: {"Q95": campo (lat, lon), ...}} en la malla de rp;
+    solo hace falta si el archivo no trae events_above_pct.
     """
 
     bounds = [0.0, 0.34, 0.5, 1.0, 2.0, 5.0, 10.0, 1e9]
     names = ["< 0.33 (≥ 3 por temporada)", "0.33–0.5", "0.5–1", "1–2", "2–5", "5–10", "> 10 años"]
     cmap = ListedColormap(["#F7FBFF", "#C6DBEF", "#9ECAE1", "#FDD49E", "#FC8D59", "#D7301F", "#7F0000"])
     norm = BoundaryNorm(bounds, cmap.N)
-    durs = [d for d in rp.durations if d in percentiles]
+    conteo = "events_above_pct" in rp.data
+    durs = [d for d in rp.durations if conteo or (percentiles and d in percentiles)]
     fig, axes, kw = _map_axes(len(labels), len(durs), (5.2 * len(durs), 3.6 * len(labels)))
     stats = {}
     for j, d in enumerate(durs):
-        u, s, xi, rate = (rp.get(f"gpd_{k}", d) for k in ("u", "sigma", "xi", "rate"))
         for i, q in enumerate(labels):
-            x = percentiles[d][q]
-            Rq = pot_recurrence_interval(x, u, s, xi, rate)
-            Rq = np.where(np.isfinite(x) & np.isfinite(u) & (x < u), 0.1, Rq)   # más frecuente que el umbral
+            Rq, metodo = recurrencia_percentil(rp, d, q, None if conteo else percentiles[d][q])
             m = _draw(axes[i, j], rp, Rq, kw, cmap=cmap, norm=norm)
-            axes[i, j].set_title(f"{q.replace('Q', 'P')} de {d} h: ¿cada cuánto se alcanza?", fontsize=10)
-            box = Rq[rp.box()]
-            stats[(d, q)] = np.nanmedian(box)
+            axes[i, j].set_title(f"{q.replace('Q', 'P')} de {d} h: ¿cada cuánto se alcanza? ({metodo})",
+                                 fontsize=10)
+            stats[(d, q)] = np.nanmedian(Rq[rp.region()])
     cb = fig.colorbar(m, ax=axes, shrink=0.8, ticks=[(a + b) / 2 for a, b in zip(bounds[:-2], bounds[1:-1])] + [11])
     cb.ax.set_yticklabels(names)
     cb.set_label("intervalo medio entre eventos (años)")
-    fig.suptitle("Rareza real de los percentiles que usa ITCHI v0.2 (mediana en México: "
-                 + ", ".join(f"{q.replace('Q', 'P')}-{d} h {v:.2f} años" for (d, q), v in stats.items()) + ")",
-                 y=1.0, fontsize=10)
+    fig.suptitle("Rareza real de los percentiles que usa ITCHI v0.2 (intervalo medio entre eventos "
+                 "independientes; medianas en el cuadro resumen)", y=1.0, fontsize=10)
     return fig, stats
 
 
@@ -190,16 +257,24 @@ def fig_r4_consistencia(rp: RP, T: float = 10.0):
     fig, axes = plt.subplots(1, len(durs), figsize=(4.8 * len(durs), 4.2), squeeze=False)
     Rt = float(recurrence_from_annual(T))
     for ax, d in zip(axes[0], durs, strict=True):
-        g = gev_return_level(T, rp.get("gev_xi", d), rp.get("gev_sigma", d), rp.get("gev_mu", d))[rp.box()]
-        p = pot_return_level(Rt, *(rp.get(f"gpd_{k}", d) for k in ("u", "sigma", "xi", "rate")))[rp.box()]
-        ok = np.isfinite(g) & np.isfinite(p)
+        sel = rp.pot_ok(d)
+        g = gev_return_level(T, rp.get("gev_xi", d), rp.get("gev_sigma", d), rp.get("gev_mu", d))[sel]
+        p = pot_return_level(Rt, *(rp.get(f"gpd_{k}", d) for k in ("u", "sigma", "xi", "rate")))[sel]
+        ok = np.isfinite(g) & np.isfinite(p) & (g > 0)
         ax.hexbin(g[ok], p[ok], gridsize=60, bins="log", cmap="Greys", mincnt=1)
         hi = np.nanpercentile(np.r_[g[ok], p[ok]], 99.5) if ok.any() else 1.0
         ax.plot([0, hi], [0, hi], "r-", lw=1)
-        rel = np.nanmedian(np.abs(p[ok] - g[ok]) / g[ok]) if ok.any() else np.nan
+        r = (p[ok] - g[ok]) / g[ok]
+        med, p90, sesgo = (np.median(np.abs(r)), np.percentile(np.abs(r), 90), np.median(r)) if ok.any() \
+            else (np.nan,) * 3
+        cumple = med <= CRITERIO_R4["mediana"] and p90 <= CRITERIO_R4["p90"]
         ax.set(xlim=(0, hi), ylim=(0, hi), xlabel=f"GEV (máximos estacionales), mm en {d} h",
-               ylabel="POT (picos independientes), mm", title=f"R{d}, T = {T:g} años · diferencia mediana {rel:.0%}")
-    fig.suptitle("Dos estimadores independientes del mismo nivel: si coinciden, el resultado es robusto", y=1.03)
+               ylabel="POT (picos independientes), mm")
+        ax.set_title(f"R{d}, T = {T:g} años · |dif| mediana {med:.1%}, P90 {p90:.1%}, sesgo {sesgo:+.1%}\n"
+                     f"criterio (≤ {CRITERIO_R4['mediana']:.0%}, ≤ {CRITERIO_R4['p90']:.0%}): "
+                     f"{'cumple' if cumple else 'NO cumple'}", fontsize=9)
+    fig.suptitle("Dos estimadores del mismo nivel sobre los mismos datos (no son independientes: "
+                 "comparten los eventos mayores)", y=1.05)
     fig.tight_layout()
     return fig
 
@@ -212,11 +287,16 @@ def fig_r5_forma(rp: RP):
     for j, d in enumerate(durs):
         for i, fam in enumerate(("gev", "gpd")):
             xi = rp.get(f"{fam}_xi", d)
+            sel = rp.region() if fam == "gev" else rp.pot_ok(d)
             m = _draw(axes[i, j], rp, xi, kw, cmap="RdBu_r", vmin=-0.5, vmax=0.5)
-            clip = np.nanmean(rp.get(f"{fam}_xi_clipped", d)[rp.box()])
-            axes[i, j].set_title(f"{fam.upper()} ξ, R{d} · acotada en {clip:.1%} de los píxeles", fontsize=10)
+            clip = np.nanmean(rp.get(f"{fam}_xi_clipped", d)[sel])
+            sd = np.nanstd(xi[sel])
+            axes[i, j].set_title(f"{fam.upper()} ξ, R{d} · mediana {np.nanmedian(xi[sel]):+.2f} · "
+                                 f"sd {sd:.2f} (muestreo {SD_XI_MUESTREO[fam]:.2f})\n"
+                                 f"acotada en {clip:.1%} de los píxeles", fontsize=9)
     fig.colorbar(m, ax=axes, shrink=0.8, label="ξ (> 0: cola pesada)")
-    fig.suptitle("Control: forma de la cola. Con 26 temporadas ξ es muy incierto por píxel", y=1.0)
+    fig.suptitle("Control: forma de la cola. Si la sd espacial de ξ no supera claramente la de muestreo, "
+                 "el mapa es ruido y conviene ξ regional", y=1.02, fontsize=10)
     return fig
 
 
@@ -276,18 +356,25 @@ def tabla_resumen(rp: RP, percentiles: dict | None = None, T_show=(2.0, 5.0, 10.
     import pandas as pd
 
     rows = []
-    box = rp.box()
+    reg = rp.region()
+    conteo = "events_above_pct" in rp.data
     for d in rp.durations:
         r = {"duración (h)": d}
         rl = rp.get("rl_gev", d)
         for T in T_show:
-            r[f"T = {T:g} años (mm)"] = float(np.nanmedian(rl[list(rp.T).index(T)][box]))
-        if percentiles and d in percentiles:
+            r[f"T = {T:g} años (mm)"] = float(np.nanmedian(rl[list(rp.T).index(T)][reg]))
+        r["umbral GPD en la cola (% píxeles)"] = 100.0 * float(np.mean(rp.pot_ok(d)[reg]))
+        if conteo:
+            for iq, qv in enumerate(rp.quantiles):
+                ev = rp.get("events_above_pct", d)[iq][reg]
+                r[f"P{qv * 100:g}: eventos por temporada"] = float(np.nanmedian(ev))
+                r[f"P{qv * 100:g}: cada (años)"] = float(1.0 / np.nanmedian(ev))
+        elif percentiles and d in percentiles:
             u, s, xi, rate = (rp.get(f"gpd_{k}", d) for k in ("u", "sigma", "xi", "rate"))
             for q, x in percentiles[d].items():
                 Rq = pot_recurrence_interval(x, u, s, xi, rate)
                 below = np.isfinite(x) & np.isfinite(u) & (x < u)
-                med = float(np.nanmedian(np.where(below, 0.0, Rq)[box]))
-                r[f"{q.replace('Q', 'P')}: cada (años)"] = med if med > 0 else f"< {1 / np.nanmedian(rate[box]):.2f}"
+                med = float(np.nanmedian(np.where(below, 0.0, Rq)[reg]))
+                r[f"{q.replace('Q', 'P')}: cada (años)"] = med if med > 0 else f"< {1 / np.nanmedian(rate[reg]):.2f}"
         rows.append(r)
     return pd.DataFrame(rows).set_index("duración (h)")

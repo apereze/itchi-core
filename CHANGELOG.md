@@ -23,6 +23,12 @@ states under every tropical cyclone 2000-2025.
   `mswep_v3_return_periods_may_nov.nc`); `scripts/figuras_retorno.py` and
   `notebooks/third test/10_periodos_retorno.ipynb`;
   `tests/test_return_periods.py`, `tests/test_periodos_retorno_script.py`.
+- F1 revision before the MSWEP run: independent events per season above the
+  v0.2 percentiles (`events_above_pct`, direct count in the same pass) for R3;
+  `gpd_full_threshold` flags pixels where fewer than K+1 wet peaks put the GPD
+  threshold at the 1 mm floor; the POT rate uses seasons with data per pixel;
+  statistics over Mexican land (`agregar_mascara`, mun23gw) instead of the box;
+  a priori criteria for R4 and R5 from a Monte Carlo (`docs/periodos_retorno.md`).
 
 ---
 

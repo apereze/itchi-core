@@ -203,3 +203,11 @@ def test_annual_return_period_conversion() -> None:
     T = np.array([1.1, 2.0, 10.0, 100.0])
     np.testing.assert_allclose(annual_return_period(recurrence_from_annual(T)), T)
     assert annual_return_period(100.0) == pytest.approx(100.5, abs=0.01)
+
+
+def test_count_at_or_above() -> None:
+    from itchi.return_periods import count_at_or_above
+
+    peaks = np.array([[5.0, np.nan], [np.nan, 2.0], [10.0, 3.0], [1.0, np.nan]])
+    thr = np.array([[1.0, 2.0], [5.0, np.nan], [20.0, 0.0]])
+    np.testing.assert_array_equal(count_at_or_above(peaks, thr), [[3, 2], [2, 0], [0, 2]])
