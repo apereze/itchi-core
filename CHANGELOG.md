@@ -34,6 +34,12 @@ Design and expectations in `docs/avance_v021.md`.
 - Notebooks `notebooks/third test/11`–`14` and `docs/avance_v021.md`.
 - `tests/test_v021_avance.py`, `tests/test_casos_v021.py`.
 
+### Fixed
+
+- `tracks.filter_synoptic_times` kept IBTrACS non-synoptic records whose
+  hour is synoptic (e.g. Emily 2005 at 2005-07-18 06:30); it now also
+  requires minute 0 and second 0.
+
 ---
 
 ## [0.2.1] - 2026-10-30

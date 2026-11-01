@@ -1,0 +1,74 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 32fb857..6834559 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -34,6 +34,12 @@ Design and expectations in `docs/avance_v021.md`.
+ - Notebooks `notebooks/third test/11`–`14` and `docs/avance_v021.md`.
+ - `tests/test_v021_avance.py`, `tests/test_casos_v021.py`.
+ 
++### Fixed
++
++- `tracks.filter_synoptic_times` kept IBTrACS non-synoptic records whose
++  hour is synoptic (e.g. Emily 2005 at 2005-07-18 06:30); it now also
++  requires minute 0 and second 0.
++
+ ---
+ 
+ ## [0.2.1] - 2026-10-30
+diff --git a/src/itchi/tracks.py b/src/itchi/tracks.py
+index 54a0da7..ef89c3d 100644
+--- a/src/itchi/tracks.py
++++ b/src/itchi/tracks.py
+@@ -247,7 +247,8 @@ def filter_synoptic_times(
+     synoptic_hours: Sequence[int] = SYNOPTIC_HOURS_UTC,
+ ) -> pd.DataFrame:
+     """
+-    Filter a track DataFrame to synoptic times.
++    Filter a track DataFrame to synoptic times (allowed hour, minute 0,
++    second 0).
+ 
+     Parameters
+     ----------
+@@ -269,7 +270,13 @@ def filter_synoptic_times(
+     times = pd.to_datetime(df[time_col], errors="raise")
+     allowed_hours = set(int(hour) for hour in synoptic_hours)
+ 
+-    mask = times.dt.hour.isin(allowed_hours)
++    # Hour in the synoptic set and exactly on the hour: IBTrACS adds
++    # non-synoptic records (e.g. landfall at 06:30) whose hour would pass.
++    mask = (
++        times.dt.hour.isin(allowed_hours)
++        & (times.dt.minute == 0)
++        & (times.dt.second == 0)
++    )
+ 
+     return df.loc[mask].copy().reset_index(drop=True)
+ 
+diff --git a/tests/test_tracks.py b/tests/test_tracks.py
+index 57553e4..5883ff1 100644
+--- a/tests/test_tracks.py
++++ b/tests/test_tracks.py
+@@ -280,3 +280,23 @@ def test_read_track_table_rejects_unknown_extension(tmp_path: Path) -> None:
+ 
+     with pytest.raises(ValueError):
+         read_track_table(path)
++
++
++def test_filter_synoptic_times_drops_off_hour_records() -> None:
++    """
++    IBTrACS non-synoptic records (e.g. landfall at 06:30) are dropped even if
++    their hour is synoptic (Emily 2005, 2005-07-18 06:30).
++    """
++    df = pd.DataFrame(
++        {
++            "storm_id": ["A"] * 4,
++            "time": [
++                pd.Timestamp("2005-07-18 06:00"),
++                pd.Timestamp("2005-07-18 06:30"),
++                pd.Timestamp("2005-07-18 12:00"),
++                pd.Timestamp("2005-07-18 12:00:30"),
++            ],
++        }
++    )
++    out = filter_synoptic_times(df)
++    assert list(out["time"]) == [pd.Timestamp("2005-07-18 06:00"), pd.Timestamp("2005-07-18 12:00")]
