@@ -1,0 +1,14 @@
+# Avance v0.2.1, caso 1: el peligro máximo de lluvia pasa del P99 al P95 de 6 h.
+# Misma lógica de v0.2 recorrida una clase: sin escalada P95 -> 1; la escalada
+# (R24 de P90 a P95 de 24 h y A72 de 0 a P75 de 72 h: suelo saturado) sube el
+# nodo inmediatamente debajo del máximo, que ahora es P90, a 0.8.
+# precipitation.PRECIP_MATRIX_V02_P95.
+experiment:
+  name: "v021_p95"
+  description: "matriz v0.2 con máximo en P95 de 6 h (escalada en P90); viento v0.2"
+
+precipitation:
+  matrix_v02:
+    p6_nodes: ["Q75", "Q90", "Q95"]
+    base: [0.0, 0.0, 0.25, 1.0]        # H_P en (0 mm, P75, P90, P95)
+    escalated: [0.0, 0.0, 0.8, 1.0]    # con suelo saturado, P90 -> 0.8

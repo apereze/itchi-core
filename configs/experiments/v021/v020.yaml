@@ -1,0 +1,6 @@
+# Avance v0.2.1, referencia: ITCHI v0.2.0 sin cambios (igual a configs/default.yaml).
+# Lluvia: matriz v0.2 (rampa R4 escalada por R24 y A72, máximo en P99 de 6 h).
+# Viento: W06 con cola hasta R_W06 (2 m/s), normalizado con la Vmax de la tormenta.
+experiment:
+  name: "v021_v020"
+  description: "v0.2.0: matriz v0.2 (P99 máximo), cola hasta R_W06, viento relativo a Vmax"

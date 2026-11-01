@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from itchi.constants import SAFFIR_SIMPSON_HAZARD_NODES
+
 KNOT_TO_MS: float = 0.514444  # same value as itchi.wind_profiles.KNOT_TO_MS
 
 
@@ -180,7 +182,8 @@ def itchi_v02_settings_from_config(
     Returns
     -------
     dict[str, Any]
-        precip_matrix, wind_tail_h34, wind_tail_end_kt, w06_attribution_mode,
+        precip_matrix, wind_tail_h34, wind_tail_end_kt, wind_hazard_scale,
+        wind_absolute_nodes, w06_attribution_mode,
         w06_direct_fallback, r_w06_kwargs, precipitation_nan_value,
         radius_fill_strategy and the ITCHI weights.
     """
@@ -221,6 +224,10 @@ def itchi_v02_settings_from_config(
         "precip_matrix": precip_spec,
         "wind_tail_h34": float(wind_cfg["tail_h34"]),
         "wind_tail_end_kt": None if tail_end_kt is None else float(tail_end_kt),
+        "wind_hazard_scale": str(wind_cfg.get("hazard_scale", "vmax")),
+        "wind_absolute_nodes": tuple(
+            (float(v), float(h)) for v, h in wind_cfg.get("saffir_simpson_nodes", SAFFIR_SIMPSON_HAZARD_NODES)
+        ),
         "w06_attribution_mode": str(radii_cfg["attribution_radius_mode"]),
         "w06_direct_fallback": bool(radii_cfg.get("use_as_direct_fallback", True)),
         "r_w06_kwargs": {

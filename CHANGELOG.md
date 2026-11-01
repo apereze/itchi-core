@@ -7,6 +7,35 @@ and this project uses semantic versioning principles while the API is under acti
 
 ---
 
+## [Unreleased] - avance v0.2.1 (casos para la tutora)
+
+Additive options for the v0.2.1 progress report; the defaults of
+`compute_itchi_snapshot_v02` and `configs/default.yaml` are unchanged (v0.2.0).
+Design and expectations in `docs/avance_v021.md`.
+
+### Added
+
+- `precipitation.PRECIP_MATRIX_V02_P95`: v0.2 matrix moved down one class,
+  maximum at the 6-h P95 instead of P99 and the saturated-soil escalation on
+  P90 (-> 0.8) instead of P95.
+- `wind.normalize_wind_hazard_absolute`, `constants.SAFFIR_SIMPSON_KT` and
+  `constants.SAFFIR_SIMPSON_HAZARD_NODES`: absolute wind hazard homologated
+  with Saffir-Simpson (tail -> class 1, TS -> 2, H1-H2 -> 3, H3 -> 4, H4-H5 -> 5).
+- `parametric_radii.compute_w06_wind_hazard_with_tail(hazard_scale=, absolute_nodes=)`
+  and `pipeline.compute_itchi_snapshot_v02(wind_hazard_scale=, wind_absolute_nodes=)`;
+  in the absolute scale the eye (r <= RMW) takes the hazard of Vmax. Result
+  metadata `wind_hazard_scale`, `wind_absolute_nodes`, `outer_wind_kt`.
+- Configuration `wind.hazard_scale` and `wind.saffir_simpson_nodes`; overlays
+  `configs/experiments/v021/{v020,p95,w12,ss,p95_ss}.yaml`.
+- `scripts/casos_v021.py`: cases in grid and by municipality (Emily 2005,
+  Alex 2010, Odile 2014, Patricia 2015, Cristóbal 2020, Manuel 2013,
+  Earl 2016), municipal aggregation, ordinal check with declarations, lead
+  times before a landslide. `scripts/figuras_v021.py`: figures.
+- Notebooks `notebooks/third test/11`–`14` and `docs/avance_v021.md`.
+- `tests/test_v021_avance.py`, `tests/test_casos_v021.py`.
+
+---
+
 ## [0.2.1] - 2026-10-30
 
 Consistency fixes, a single v0.2 entry point and the Block 1 experiments

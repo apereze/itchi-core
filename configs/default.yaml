@@ -209,6 +209,21 @@ wind:
   # Same cut in m/s (e.g. 12.0 = 23.3 kt); give at most one of the two.
   tail_end_wind_ms: null
 
+  # Normalization of the wind hazard (pipeline wind_hazard_scale):
+  #   "vmax"           v0.2: relative to the storm Vmax (above formula)
+  #   "saffir_simpson" v0.2.1 proposal: absolute nodes (wind kt, H_W) below,
+  #                    linear between nodes, constant above the last one; the
+  #                    tail below 34 kt is unchanged (h34 = H of the first node)
+  hazard_scale: "vmax"
+  # SIAT-style classes of 0.2: tail -> 1, TS (34-63) -> 2, H1-H2 (64-95) -> 3,
+  # H3 (96-112) -> 4, H4-H5 (>= 113) -> 5; H_W = 1 from 137 kt (H5).
+  saffir_simpson_nodes:
+    - [34.0, 0.2]
+    - [64.0, 0.4]
+    - [96.0, 0.6]
+    - [113.0, 0.8]
+    - [137.0, 1.0]
+
   # Tropical-storm-force wind threshold
   reference_wind_kt: 34.0
 

@@ -1,0 +1,8 @@
+# Avance v0.2.1, caso 2 (paso intermedio): cola de viento cortada en 12 m/s
+# (23.3 kt); el viento sigue normalizado con la Vmax de la tormenta.
+experiment:
+  name: "v021_w12"
+  description: "matriz v0.2; cola cortada en 12 m/s; viento relativo a Vmax"
+
+wind:
+  tail_end_wind_ms: 12.0

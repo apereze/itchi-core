@@ -1,0 +1,10 @@
+# Avance v0.2.1, caso 2 (propuesta): cola cortada en 12 m/s y peligro por
+# viento absoluto homologado con Saffir-Simpson (wind.saffir_simpson_nodes de
+# configs/default.yaml: cola -> clase 1, TT -> 2, H1-H2 -> 3, H3 -> 4, H4-H5 -> 5).
+experiment:
+  name: "v021_ss"
+  description: "matriz v0.2; cola cortada en 12 m/s; viento absoluto Saffir-Simpson"
+
+wind:
+  tail_end_wind_ms: 12.0
+  hazard_scale: "saffir_simpson"

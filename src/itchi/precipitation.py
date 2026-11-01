@@ -205,6 +205,20 @@ PRECIP_MATRIX_V02: dict[str, Any] = {
 }
 
 
+# v0.2.1 experiment (configs/experiments/v021/p95.yaml): maximum at the 6-h
+# P95 instead of P99, with the v0.2 logic moved down one class. Without
+# escalation P95 -> 1 (P75 -> 0, P90 -> 0.25 unchanged). The v0.2 escalation
+# raised the node just below the maximum (P95) to 0.8; here that node is P90:
+# with R24 >= P95 of 24 h and A72 >= P75 of 72 h (saturated soil), P90 -> 0.8.
+PRECIP_MATRIX_V02_P95: dict[str, Any] = {
+    "p6_nodes": ("Q75", "Q90", "Q95"),
+    "base": (0.0, 0.0, 0.25, 1.0),
+    "escalated": (0.0, 0.0, 0.8, 1.0),
+    "escalation": dict(PRECIP_MATRIX_V02["escalation"]),
+    "combine": PRECIP_MATRIX_V02["combine"],
+}
+
+
 def _where(cond: Any, x: Any, y: Any) -> Any:
     """
     np.where or xr.where depending on the input types.

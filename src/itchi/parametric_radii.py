@@ -32,7 +32,11 @@ from itchi.constants import QUADRANTS, TROPICAL_STORM_WIND_KT
 from itchi.rocloud import DEFAULT_ROCLOUD_COLUMN_MAP
 from itchi.tracks import DEFAULT_R34_COLUMN_MAP
 from itchi.units import convert_radius_to_km
-from itchi.wind import normalize_wind_hazard, normalize_wind_hazard_with_tail
+from itchi.wind import (
+    normalize_wind_hazard,
+    normalize_wind_hazard_absolute,
+    normalize_wind_hazard_with_tail,
+)
 from itchi.wind_profiles import (
     KNOT_TO_MS,
     V_OUTER_PA21_MS,
@@ -379,6 +383,8 @@ def compute_w06_wind_hazard_with_tail(
     h34: float = 0.2,
     reference_wind_kt: float = TROPICAL_STORM_WIND_KT,
     tail_end_wind_kt: float | None = None,
+    hazard_scale: str = "vmax",
+    absolute_nodes: tuple[tuple[float, float], ...] | None = None,
     **profile_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -394,9 +400,15 @@ def compute_w06_wind_hazard_with_tail(
        (R_W06_q in compute_itchi_snapshot_v02). With tail_end_wind_kt,
        V_out = max(V(s * R_attr_q), tail_end_wind_kt): the tail is cut at
        that wind speed and never extends beyond R_attr_q.
-    4. wind.normalize_wind_hazard_with_tail: inside R_direct_q,
-       H_W = h34 + (1 - h34)(V - 34)/(Vmax - 34); outside,
+    4. hazard_scale="vmax" (v0.2, wind.normalize_wind_hazard_with_tail):
+       inside R_direct_q, H_W = h34 + (1 - h34)(V - 34)/(Vmax - 34); outside,
        H_W = h34 (V - V_out)/(34 - V_out), zero at R_attr_q.
+       hazard_scale="saffir_simpson" (v0.2.1 proposal,
+       wind.normalize_wind_hazard_absolute): H_W from absolute wind nodes
+       (absolute_nodes; default constants.SAFFIR_SIMPSON_HAZARD_NODES), same
+       tail below 34 kt with h34 = hazard of the first node; h34 is not
+       used, and Vmax only to fill the eye (r <= RMW takes the hazard of
+       Vmax, as the eyewall crosses the cell within the 6-h window).
 
     The direct/indirect/exterior masks are applied later by the pipeline.
 
@@ -420,6 +432,11 @@ def compute_w06_wind_hazard_with_tail(
     tail_end_wind_kt : float or None, default=None
         Optional wind speed (kt) at which the tail ends, e.g. 17 kt; must be
         below reference_wind_kt. None keeps the tail down to R_attr_q.
+    hazard_scale : {"vmax", "saffir_simpson"}, default="vmax"
+        Normalization of the wind: relative to the storm Vmax (v0.2) or
+        absolute, homologated with the Saffir-Simpson scale (v0.2.1).
+    absolute_nodes : tuple of (wind_kt, hazard) or None, default=None
+        Nodes of the absolute scale; None uses SAFFIR_SIMPSON_HAZARD_NODES.
     **profile_kwargs : Any
         Passed to Willoughby2006Profile (e.g. rmax_variant).
 
@@ -427,8 +444,10 @@ def compute_w06_wind_hazard_with_tail(
     -------
     dict[str, Any]
         "H_W" (hazard), "wind_kt" (W06 wind), "outer_wind_kt", "x1_km",
-        "x1_calibrated" and "radius_scale".
+        "x1_calibrated", "radius_scale" and "hazard_scale".
     """
+    if hazard_scale not in {"vmax", "saffir_simpson"}:
+        raise ValueError(f"hazard_scale must be 'vmax' or 'saffir_simpson': {hazard_scale!r}")
     if tail_end_wind_kt is not None and not 0.0 <= float(tail_end_wind_kt) < reference_wind_kt:
         raise ValueError(
             f"tail_end_wind_kt must be in [0, {reference_wind_kt}). Received: {tail_end_wind_kt}"
@@ -467,14 +486,26 @@ def compute_w06_wind_hazard_with_tail(
         outer_kt = np.maximum(outer_kt, float(tail_end_wind_kt))
     direct = r <= r_dir
 
-    hazard = normalize_wind_hazard_with_tail(
-        wind_kt=wind_kt,
-        vmax_kt=float(vmax_kt),
-        direct_mask=direct,
-        outer_wind_kt=outer_kt,
-        h34=h34,
-        reference_wind_kt=reference_wind_kt,
-    )
+    if hazard_scale == "saffir_simpson":
+        # Eye: inside the RMW the hazard is that of Vmax (the eyewall crosses
+        # the cell within the 6-h window); otherwise the calm eye would read
+        # as no hazard. The returned wind_kt keeps the physical profile.
+        rmax_km = float(np.asarray(profile.rmax, dtype=float).ravel()[0])
+        wind_for_hazard = np.where(r * scale <= rmax_km, float(vmax_kt), wind_kt)
+        hazard = normalize_wind_hazard_absolute(
+            wind_kt=wind_for_hazard,
+            outer_wind_kt=outer_kt,
+            nodes=absolute_nodes,
+        )
+    else:
+        hazard = normalize_wind_hazard_with_tail(
+            wind_kt=wind_kt,
+            vmax_kt=float(vmax_kt),
+            direct_mask=direct,
+            outer_wind_kt=outer_kt,
+            h34=h34,
+            reference_wind_kt=reference_wind_kt,
+        )
 
     def _wrap(values: np.ndarray) -> Any:
         if template is None:
@@ -488,4 +519,5 @@ def compute_w06_wind_hazard_with_tail(
         "x1_km": float(profile.x1[0]),
         "x1_calibrated": calibrated,
         "radius_scale": _wrap(scale),
+        "hazard_scale": hazard_scale,
     }
