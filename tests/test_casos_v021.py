@@ -173,6 +173,13 @@ def test_tabla_ordinal_and_find_municipio(case) -> None:
     assert cv.find_municipio(gdf, "Huauchinango", 21) == "21071"
     with pytest.raises(ValueError):
         cv.find_municipio(gdf, "Atoyac de Álvarez", "14")
+    # acento mal decodificado (UTF-8 leído como latin-1) y respaldo por CVEGEO
+    bad = gdf.assign(NOMGEO=gdf["NOMGEO"].map(lambda x: x.encode("utf-8").decode("latin-1")))
+    assert "Ã" in bad["NOMGEO"].iloc[0]
+    assert cv.find_municipio(bad, "Atoyac de Álvarez", "12") == "12011"
+    other = gdf.assign(NOMGEO=["Atoyac", "Huauchinango", "Acapulco de Juárez"])
+    with pytest.warns(UserWarning):
+        assert cv.find_municipio(other, "Atoyac de Álvarez", "12", cvegeo="12011") == "12011"
 
 
 def test_declaratoria_inicio() -> None:

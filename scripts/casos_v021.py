@@ -85,7 +85,7 @@ CASOS_1_2 = ("EMILY2005", "ALEX2010", "PATRICIA2015", "CRISTOBAL2020", "ODILE201
 # (UTC-5) de abril a octubre.
 DESLIZAMIENTOS: dict[str, dict] = {
     "MANUEL2013": dict(
-        evento="La Pintada", municipio="Atoyac de Álvarez", cve_ent="12",
+        evento="La Pintada", municipio="Atoyac de Álvarez", cve_ent="12", cvegeo="12011",
         t_local="2013-09-16 15:30", utc_offset_h=-5, incertidumbre_h=1.0,
         nota=("Alud que sepultó parte de La Pintada (Sierra de Atoyac, Guerrero) hacia las 15:30 del lunes "
               "16 de septiembre de 2013 (La Jornada, 3 nov 2013; Proceso, 21 sep 2013). El centro de Manuel se "
@@ -95,7 +95,7 @@ DESLIZAMIENTOS: dict[str, dict] = {
     ),
     "EARL2016": dict(
         evento="Huauchinango (colonias La Joya, Guadalupe, Aurora, La Cumbre; Xaltepec)",
-        municipio="Huauchinango", cve_ent="21",
+        municipio="Huauchinango", cve_ent="21", cvegeo="21071",
         t_local="2016-08-07 03:00", utc_offset_h=-5, incertidumbre_h=3.0,
         nota=("Deslizamientos en la madrugada del domingo 7 de agosto de 2016 con remanentes de Earl; "
               "la hora exacta no se reporta (se toma 03:00 ± 3 h). 24 muertos en Huauchinango "
@@ -616,18 +616,50 @@ def tabla_ordinal(C: dict, decl_codes, tags=None) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def find_municipio(gdf, nombre: str, cve_ent: str) -> str:
-    """CVEGEO del municipio por nombre (sin acentos ni mayúsculas) y clave de entidad."""
+def _norm_name(x) -> str:
+    """
+    Nombre comparable: repara el texto UTF-8 leído como latin-1 ("Ã\x81lvarez"),
+    quita acentos y deja solo letras, dígitos y espacios en minúsculas.
+    """
     import unicodedata
 
-    def norm(x):
-        return "".join(ch for ch in unicodedata.normalize("NFKD", str(x)) if not unicodedata.combining(ch)).lower().strip()
+    t = str(x)
+    if "Ã" in t or "Â" in t:
+        try:
+            t = t.encode("latin-1").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    t = "".join(ch for ch in unicodedata.normalize("NFKD", t) if not unicodedata.combining(ch)).lower()
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in t).split())
 
-    ent = gdf["CVEGEO"].astype(str).str.zfill(5).str[:2]
-    hit = gdf[(ent == str(cve_ent).zfill(2)) & (gdf["NOMGEO"].map(norm) == norm(nombre))]
-    if len(hit) != 1:
-        raise ValueError(f"{nombre} ({cve_ent}): {len(hit)} coincidencias")
-    return str(hit["CVEGEO"].iloc[0]).zfill(5)
+
+def find_municipio(gdf, nombre: str, cve_ent: str, cvegeo: str | None = None) -> str:
+    """
+    CVEGEO del municipio por nombre y clave de entidad. La comparación no
+    distingue acentos, mayúsculas ni puntuación y repara acentos mal
+    decodificados. Si el nombre no aparece y se da cvegeo, usa esa clave
+    (avisando con el NOMGEO del shapefile); si no, el error lista los
+    municipios de la entidad que comparten alguna palabra con el nombre.
+    """
+    codes = gdf["CVEGEO"].astype(str).str.zfill(5)
+    in_ent = codes.str[:2] == str(cve_ent).zfill(2)
+    names = gdf["NOMGEO"].map(_norm_name)
+    target = _norm_name(nombre)
+    hit = gdf[in_ent & (names == target)]
+    if len(hit) == 0:                                   # todas las palabras del nombre
+        words = set(target.split()) - {"de", "del", "la", "las", "los", "el"}
+        hit = gdf[in_ent & names.map(lambda n: words <= set(n.split()))]
+    if len(hit) == 1:
+        return str(hit["CVEGEO"].iloc[0]).zfill(5)
+    if len(hit) == 0 and cvegeo is not None and (codes == str(cvegeo).zfill(5)).any():
+        nom = gdf.loc[codes == str(cvegeo).zfill(5), "NOMGEO"].iloc[0]
+        warnings.warn(f"{nombre!r} no se encontró por nombre; se usa CVEGEO {cvegeo} (NOMGEO = {nom!r})", stacklevel=2)
+        return str(cvegeo).zfill(5)
+    first = target.split()[0] if target else ""
+    similar = sorted(gdf.loc[in_ent & names.str.contains(first, regex=False), "NOMGEO"].astype(str))[:15]
+    raise ValueError(f"{nombre} ({cve_ent}): {len(hit)} coincidencias. "
+                     f"Municipios de la entidad {cve_ent} con '{first}': {similar} "
+                     f"(municipios de la entidad en la malla: {int(in_ent.sum())})")
 
 
 def percentile_level(values: np.ndarray, quantiles: dict[str, np.ndarray | float]) -> np.ndarray:
