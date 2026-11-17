@@ -144,3 +144,49 @@ Después, los notebooks 11 a 14. Figuras en `outputs/figures/avance_v021/`.
 3. Justificación física del corte en 12 m/s.
 4. Estadístico municipal: máximo, P90 o fracción de área.
 5. Atribución después de la disipación (remanentes) para los deslizamientos.
+
+## 8. Acuerdos tras el avance (noviembre de 2026): ITCHI v0.2.2
+
+Acordado en la reunión de avance; implementado como valor por defecto de
+`configs/default.yaml` en v0.2.2. Los overlays de `configs/experiments/v021/`
+y `configs/experiments/b1/` quedan congelados y siguen reproduciendo lo
+presentado; los valores por defecto de `compute_itchi_snapshot_v02` siguen
+siendo v0.2.0 (`v020.yaml`).
+
+**Lluvia (pregunta 1 de la sección 7).** Por ahora, el máximo pasa al P95 de
+6 h y se quita el P99 (`PRECIP_MATRIX_V02_P95`). La escalada actúa solo sobre
+P6: con R24 ≥ P95 de 24 h y A72 ≥ P75 de 72 h, P90 → 0.8 (no P90 → 1 como en
+M1). Los umbrales de R24 y A72 no cambian respecto a v0.2.
+
+| P6 (6 h) | Sin escalada | Suelo saturado y persistencia |
+|---|--:|--:|
+| 0 mm, P75 | 0 | 0 |
+| P90 | 0.25 | 0.8 |
+| P95 | 1 | 1 |
+
+Es una decisión provisional, a revisar con los periodos de retorno de v0.3
+(F1). Con el P95, los pares en clase 5 suben un 46 % y la proporción con
+declaratoria en esa clase baja de 0.185 a 0.133, sin mejor discriminación (en
+el Bloque 1, PSS de clase 5 de 0.553 a 0.546). El P95 de 6 h se rebasa unas tres
+veces por temporada en cada píxel.
+
+**Viento (pregunta 2).** Peligro absoluto homologado con la escala
+Saffir-Simpson (umbrales de la NHC, viento sostenido de 1 min:
+https://www.nhc.noaa.gov/aboutsshws.php), con la cola cortada en 12 m/s
+(23.3 kt). `constants.SAFFIR_SIMPSON_HAZARD_NODES`:
+
+| Viento local (kt) | Categoría | H_W | Clase |
+|---|---|---|---|
+| 23.3–34 | cola | 0–0.2 | 1 |
+| 34–63 | tormenta tropical | 0.2–0.4 | 2 |
+| 64–82 | H1 | 0.4–0.6 | 3 (moderado) |
+| 83–95 | H2 | 0.6–0.8 | 4 (alto) |
+| ≥ 96 | H3–H5 (huracán mayor) | 0.8–1 (1 desde 137 kt) | 5 (máximo) |
+
+Dentro de la clase 5, H_W sigue creciendo hasta 137 kt; esto no cambia la clase,
+solo el valor continuo de ITCHI. La propuesta del avance (H1–H2 → 3, H3 → 4,
+H4–H5 → 5) queda en `constants.SAFFIR_SIMPSON_HAZARD_NODES_V021`.
+
+**Pendiente.** Justificación física del corte en 12 m/s (pregunta 3),
+estadístico municipal (pregunta 4) y atribución a remanentes (pregunta 5).
+

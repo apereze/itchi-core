@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from itchi.config import itchi_v02_settings_from_config, load_experiment_config
-from itchi.constants import SAFFIR_SIMPSON_HAZARD_NODES, SAFFIR_SIMPSON_KT
+from itchi.config import itchi_v02_settings_from_config, load_default_config, load_experiment_config
+from itchi.constants import SAFFIR_SIMPSON_HAZARD_NODES, SAFFIR_SIMPSON_HAZARD_NODES_V021, SAFFIR_SIMPSON_KT
 from itchi.parametric_radii import compute_w06_wind_hazard_with_tail
 from itchi.pipeline import compute_itchi_snapshot_v02
 from itchi.plotting import classify_itchi_to_siat_levels
@@ -36,8 +36,14 @@ Q72 = {"Q75": 30.0}
 
 
 def test_absolute_nodes_values() -> None:
-    v = np.array([34.0, 49.0, 64.0, 80.0, 96.0, 113.0, 137.0, 185.0])
+    v = np.array([34.0, 49.0, 64.0, 83.0, 96.0, 137.0, 185.0])
     h = normalize_wind_hazard_absolute(v, outer_wind_kt=KT_12MS)
+    np.testing.assert_allclose(h, [0.2, 0.3, 0.4, 0.6, 0.8, 1.0, 1.0])
+
+
+def test_absolute_nodes_values_v021() -> None:
+    v = np.array([34.0, 49.0, 64.0, 80.0, 96.0, 113.0, 137.0, 185.0])
+    h = normalize_wind_hazard_absolute(v, outer_wind_kt=KT_12MS, nodes=SAFFIR_SIMPSON_HAZARD_NODES_V021)
     np.testing.assert_allclose(h, [0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.0])
 
 
@@ -47,17 +53,30 @@ def test_absolute_tail_below_34_kt() -> None:
     np.testing.assert_allclose(h, [0.0, 0.0, 0.1, 0.2], atol=1e-4)
 
 
-def test_saffir_simpson_categories_fall_in_their_classes() -> None:
+CATEGORY_CENTERS = {"cola": 28.0, "TS": 49.0, "H1": 73.0, "H2": 89.0, "H3": 104.0, "H4": 125.0, "H5": 150.0}
+
+
+@pytest.mark.parametrize(
+    ("nodes", "expected"),
+    [
+        # v0.2.2: moderado = H1, alto = H2, máximo desde H3
+        (SAFFIR_SIMPSON_HAZARD_NODES, {"cola": 1, "TS": 2, "H1": 3, "H2": 4, "H3": 5, "H4": 5, "H5": 5}),
+        # propuesta v0.2.1
+        (SAFFIR_SIMPSON_HAZARD_NODES_V021, {"cola": 1, "TS": 2, "H1": 3, "H2": 3, "H3": 4, "H4": 5, "H5": 5}),
+    ],
+)
+def test_saffir_simpson_categories_fall_in_their_classes(nodes, expected) -> None:
     # Centro de cada categoría -> clase SIAT esperada
-    centers = {"cola": 28.0, "TS": 49.0, "H1": 73.0, "H2": 89.0, "H3": 104.0, "H4": 125.0, "H5": 150.0}
-    expected = {"cola": 1, "TS": 2, "H1": 3, "H2": 3, "H3": 4, "H4": 5, "H5": 5}
-    h = normalize_wind_hazard_absolute(np.array(list(centers.values())), outer_wind_kt=KT_12MS)
+    h = normalize_wind_hazard_absolute(np.array(list(CATEGORY_CENTERS.values())), outer_wind_kt=KT_12MS, nodes=nodes)
     cls = classify_itchi_to_siat_levels(h)
-    assert dict(zip(centers, cls.astype(int).tolist(), strict=True)) == expected
+    assert dict(zip(CATEGORY_CENTERS, cls.astype(int).tolist(), strict=True)) == expected
 
 
 def test_saffir_simpson_constants_consistent() -> None:
     winds = [v for v, _ in SAFFIR_SIMPSON_HAZARD_NODES]
+    for key in ("TS", "H1", "H2", "H3", "H5"):
+        assert SAFFIR_SIMPSON_KT[key] in winds
+    winds = [v for v, _ in SAFFIR_SIMPSON_HAZARD_NODES_V021]
     for key in ("TS", "H1", "H3", "H4", "H5"):
         assert SAFFIR_SIMPSON_KT[key] in winds
 
@@ -163,4 +182,32 @@ def test_p95_overlay_settings() -> None:
     assert both["precip_matrix"]["p6_nodes"][-1] == "Q95"
     assert both["wind_hazard_scale"] == "saffir_simpson"
     assert both["wind_tail_end_kt"] == pytest.approx(KT_12MS)
-    assert both["wind_absolute_nodes"] == SAFFIR_SIMPSON_HAZARD_NODES
+    assert both["wind_absolute_nodes"] == SAFFIR_SIMPSON_HAZARD_NODES_V021
+    assert settings["wind_tail_end_kt"] is None
+
+
+# ------------------------------------------------------------------ esquema v0.2.2 (configs/default.yaml)
+
+
+def test_default_config_is_v022() -> None:
+    s = itchi_v02_settings_from_config(load_default_config())
+    m = s["precip_matrix"]
+    assert m["p6_nodes"] == PRECIP_MATRIX_V02_P95["p6_nodes"]          # máximo en P95
+    assert m["base"] == PRECIP_MATRIX_V02_P95["base"]
+    assert m["escalated"] == PRECIP_MATRIX_V02_P95["escalated"]        # escalada solo en P6: P90 -> 0.8
+    assert m["escalation"] == PRECIP_MATRIX_V02["escalation"]          # umbrales R24 y A72 de v0.2
+    assert s["wind_hazard_scale"] == "saffir_simpson"
+    assert s["wind_tail_end_kt"] == pytest.approx(KT_12MS)
+    assert s["wind_absolute_nodes"] == SAFFIR_SIMPSON_HAZARD_NODES
+
+
+def test_v021_overlays_frozen() -> None:
+    # Los overlays del avance no dependen de los valores por defecto vigentes
+    s = {n: itchi_v02_settings_from_config(load_experiment_config(V021 / f"{n}.yaml"))
+         for n in ("v020", "p95", "w12", "ss", "p95_ss")}
+    for n in ("v020", "w12", "ss"):
+        assert s[n]["precip_matrix"]["p6_nodes"][-1] == "Q99"
+    for n in ("v020", "p95", "w12"):
+        assert s[n]["wind_hazard_scale"] == "vmax"
+    for n in ("ss", "p95_ss"):
+        assert s[n]["wind_absolute_nodes"] == SAFFIR_SIMPSON_HAZARD_NODES_V021

@@ -12,3 +12,7 @@ precipitation:
     p6_nodes: ["Q75", "Q90", "Q95"]
     base: [0.0, 0.0, 0.25, 1.0]        # H_P en (0 mm, P75, P90, P95)
     escalated: [0.0, 0.0, 0.8, 1.0]    # con suelo saturado, P90 -> 0.8
+
+wind:                                  # viento de v0.2.0 (congelado en v0.2.2)
+  tail_end_wind_ms: null
+  hazard_scale: "vmax"

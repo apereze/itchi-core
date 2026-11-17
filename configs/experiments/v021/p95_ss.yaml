@@ -13,3 +13,9 @@ precipitation:
 wind:
   tail_end_wind_ms: 12.0
   hazard_scale: "saffir_simpson"
+  saffir_simpson_nodes:              # propuesta v0.2.1 (SAFFIR_SIMPSON_HAZARD_NODES_V021)
+    - [34.0, 0.2]
+    - [64.0, 0.4]
+    - [96.0, 0.6]
+    - [113.0, 0.8]
+    - [137.0, 1.0]

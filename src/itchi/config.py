@@ -170,9 +170,11 @@ def itchi_v02_settings_from_config(
         settings = itchi_v02_settings_from_config(load_default_config())
         result = compute_itchi_snapshot_v02(..., **settings)
 
-    With configs/default.yaml the result equals the keyword defaults of
-    compute_itchi_snapshot_v02 (checked in tests/test_v02_snapshot.py), so an
-    experiment is defined by editing a copy of the YAML file.
+    With configs/experiments/v021/v020.yaml the result equals the keyword
+    defaults of compute_itchi_snapshot_v02, i.e. ITCHI v0.2.0 (checked in
+    tests/test_v02_snapshot.py). configs/default.yaml holds the v0.2.2
+    scheme (maximum at the 6-h P95, Saffir-Simpson wind, tail cut at
+    12 m s-1). An experiment is an overlay on configs/default.yaml.
 
     Parameters
     ----------

@@ -578,16 +578,20 @@ def compute_itchi_snapshot_v02(
        h34 (V - V_out)/(34 - V_out) that vanishes at R_W06_q (or where
        V = wind_tail_end_kt). R_W06 bounds only the wind; the precipitation
        of the indirect region extends to R_attr_q.
-       wind_hazard_scale="saffir_simpson" (v0.2.1 proposal) replaces the
+       wind_hazard_scale="saffir_simpson" (configs/default.yaml since
+       v0.2.2) replaces the
        Vmax normalization by absolute nodes homologated with Saffir-Simpson
        (wind_absolute_nodes); the tail below 34 kt is the same.
     6. Masks, components and ITCHI as in compute_itchi_snapshot, with the
        wind tail in the indirect component:
        H_ind = 1 - (1 - H_Wind)(1 - H_Pind).
 
-    The keyword defaults equal configs/default.yaml; an experiment can pass
-    ``**itchi.config.itchi_v02_settings_from_config(cfg)`` built from a
-    modified copy of the YAML file.
+    The keyword defaults reproduce ITCHI v0.2.0 (maximum at the 6-h P99,
+    wind relative to Vmax, tail to R_W06) and equal
+    configs/experiments/v021/v020.yaml. The current scheme (v0.2.2: maximum
+    at the 6-h P95, Saffir-Simpson wind, tail cut at 12 m s-1) is
+    configs/default.yaml: pass
+    ``**itchi.config.itchi_v02_settings_from_config(load_default_config())``.
 
     Inputs must be all NumPy arrays or all xarray DataArrays on the same
     grid (P6, R24, A72, percentile fields, lon, lat).
@@ -647,12 +651,12 @@ def compute_itchi_snapshot_v02(
         extends beyond R_W06_q.
     wind_hazard_scale : {"vmax", "saffir_simpson"}, default="vmax"
         "vmax": H_W relative to the storm Vmax (v0.2). "saffir_simpson":
-        absolute H_W from wind_absolute_nodes (v0.2.1 proposal); h34 is
-        then the hazard of the first node.
+        absolute H_W from wind_absolute_nodes (v0.2.2 configuration); h34
+        is then the hazard of the first node.
     wind_absolute_nodes : tuple of (wind_kt, hazard)
         Nodes of the absolute scale, default
         constants.SAFFIR_SIMPSON_HAZARD_NODES (tail -> class 1, TS -> 2,
-        H1-H2 -> 3, H3 -> 4, H4-H5 -> 5). Used only with "saffir_simpson".
+        H1 -> 3, H2 -> 4, H3-H5 -> 5). Used only with "saffir_simpson".
     r34_mean_km : float or None, default=None
         Observed mean R34 (km) to calibrate W06; None takes the mean of the
         valid observed quadrants (no calibration if there are none).

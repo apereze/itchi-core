@@ -394,7 +394,8 @@ def normalize_wind_hazard_absolute(
     epsilon: float = DEFAULT_EPSILON,
 ) -> ArrayLike:
     """
-    Absolute wind hazard (ITCHI v0.2.1 proposal, Saffir-Simpson scale).
+    Absolute wind hazard (Saffir-Simpson scale; v0.2.1 proposal, default of
+    configs/default.yaml since v0.2.2).
 
     Unlike normalize_wind_hazard_with_tail, H_W does not depend on the Vmax
     of the storm: the same local wind gives the same hazard in every storm.
@@ -406,8 +407,9 @@ def normalize_wind_hazard_absolute(
     V_out is the tail-end wind of each cell (V(R_W06_q), or the cut speed,
     e.g. 12 m s-1, whichever is larger), so the tail is the same as in v0.2
     with h34 = h_1. The default nodes (constants.SAFFIR_SIMPSON_HAZARD_NODES)
-    put the Saffir-Simpson categories in the SIAT-style classes of 0.2:
-    tail -> 1, TS -> 2, H1-H2 -> 3, H3 -> 4, H4-H5 -> 5. The classes are
+    put the Saffir-Simpson categories in the SIAT-style classes of 0.2
+    (v0.2.2): tail -> 1, TS -> 2, H1 -> 3, H2 -> 4, H3-H5 -> 5; the v0.2.1
+    proposal is constants.SAFFIR_SIMPSON_HAZARD_NODES_V021. The classes are
     (lower, upper], so a wind exactly on a category bound (e.g. 64 kt, H =
     0.4) falls in the lower class; this only happens on a contour line.
 

@@ -7,20 +7,46 @@ and this project uses semantic versioning principles while the API is under acti
 
 ---
 
-## [Unreleased] - avance v0.2.1 (casos para la tutora)
+## [0.2.2] - 2026-11-15
 
-Additive options for the v0.2.1 progress report; the defaults of
-`compute_itchi_snapshot_v02` and `configs/default.yaml` are unchanged (v0.2.0).
-Design and expectations in `docs/avance_v021.md`.
+Options of the v0.2.1 progress report (Added) and the scheme agreed after it,
+now the default of `configs/default.yaml` (Changed). The keyword defaults of
+`compute_itchi_snapshot_v02` still reproduce v0.2.0
+(`configs/experiments/v021/v020.yaml`). Design, results and agreements in
+`docs/avance_v021.md` (section 8).
+
+### Changed
+
+- `configs/default.yaml` (v0.2.2 scheme):
+  - precipitation maximum at the 6-h P95 (`PRECIP_MATRIX_V02_P95`); the
+    escalation acts only on the P6 node below the maximum (P90 -> 0.8 with
+    R24 >= P95 of 24 h and A72 >= P75 of 72 h); R24 and A72 thresholds as in v0.2;
+  - wind `hazard_scale: "saffir_simpson"` with the tail cut at 12 m/s
+    (`tail_end_wind_ms: 12.0`);
+  - Saffir-Simpson classes tail -> 1, TS -> 2, H1 (moderate) -> 3,
+    H2 (high) -> 4, >= H3 (maximum) -> 5: `constants.SAFFIR_SIMPSON_HAZARD_NODES`
+    = (34, 0.2), (64, 0.4), (83, 0.6), (96, 0.8), (137, 1.0).
+- The v0.2.1 proposal nodes (H1-H2 -> 3, H3 -> 4, H4-H5 -> 5) are kept as
+  `constants.SAFFIR_SIMPSON_HAZARD_NODES_V021`.
+- Overlays `configs/experiments/v021/*.yaml` and `configs/experiments/b1/*.yaml`
+  now set explicitly the precipitation matrix, wind scale, tail cut and nodes
+  they used to inherit from `configs/default.yaml`, so they reproduce the
+  presented results; `scripts/figuras_v021.py` draws the proposal with the
+  v0.2.1 nodes.
+- Tests: the v0.2.0 overlay (not `configs/default.yaml`) equals the keyword
+  defaults of `compute_itchi_snapshot_v02`; new `test_default_config_is_v022`
+  and `test_v021_overlays_frozen`.
+- Version 0.2.2 (`constants.ITCHI_VERSION`, `pyproject.toml`,
+  `configs/default.yaml`); `*.patch` ignored by git.
 
 ### Added
 
 - `precipitation.PRECIP_MATRIX_V02_P95`: v0.2 matrix moved down one class,
   maximum at the 6-h P95 instead of P99 and the saturated-soil escalation on
   P90 (-> 0.8) instead of P95.
-- `wind.normalize_wind_hazard_absolute`, `constants.SAFFIR_SIMPSON_KT` and
-  `constants.SAFFIR_SIMPSON_HAZARD_NODES`: absolute wind hazard homologated
-  with Saffir-Simpson (tail -> class 1, TS -> 2, H1-H2 -> 3, H3 -> 4, H4-H5 -> 5).
+- `wind.normalize_wind_hazard_absolute` and `constants.SAFFIR_SIMPSON_KT`:
+  absolute wind hazard homologated with Saffir-Simpson (v0.2.1 proposal:
+  tail -> class 1, TS -> 2, H1-H2 -> 3, H3 -> 4, H4-H5 -> 5).
 - `parametric_radii.compute_w06_wind_hazard_with_tail(hazard_scale=, absolute_nodes=)`
   and `pipeline.compute_itchi_snapshot_v02(wind_hazard_scale=, wind_absolute_nodes=)`;
   in the absolute scale the eye (r <= RMW) takes the hazard of Vmax. Result

@@ -8,13 +8,14 @@ and the v0.2 defaults.
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import numpy as np
 import pytest
 import xarray as xr
 
 from itchi.climatology import quantile_dataarray_to_dict
-from itchi.config import itchi_v02_settings_from_config, load_default_config
+from itchi.config import itchi_v02_settings_from_config, load_experiment_config
 from itchi.parametric_radii import (
     R_W06_DEFAULTS,
     compute_parametric_radii,
@@ -230,8 +231,13 @@ def test_v02_rejects_invalid_vmax() -> None:
 # ------------------------------------------------------------------ configuración
 
 
-def test_default_config_equals_v02_defaults() -> None:
-    settings = itchi_v02_settings_from_config(load_default_config())
+V020 = Path(__file__).resolve().parents[1] / "configs" / "experiments" / "v021" / "v020.yaml"
+
+
+def test_v020_overlay_equals_v02_defaults() -> None:
+    # Desde v0.2.2 los valores por defecto de la función son v0.2.0 (= v020.yaml);
+    # el esquema vigente está en configs/default.yaml (tests/test_v021_avance.py)
+    settings = itchi_v02_settings_from_config(load_experiment_config(V020))
     params = inspect.signature(compute_itchi_snapshot_v02).parameters
     resolved = {"precip_matrix": PRECIP_MATRIX_V02, "r_w06_kwargs": R_W06_DEFAULTS}
     for key, value in settings.items():
@@ -244,7 +250,7 @@ def test_default_config_equals_v02_defaults() -> None:
 def test_v02_settings_can_be_passed_as_kwargs() -> None:
     lon, lat = _grid()
     p6, r24, a72 = _fields(lon.shape)
-    settings = itchi_v02_settings_from_config(load_default_config())
+    settings = itchi_v02_settings_from_config(load_experiment_config(V020))
     np.testing.assert_allclose(
         _v02(p6, r24, a72, lon, lat, **settings)["ITCHI"],
         _v02(p6, r24, a72, lon, lat)["ITCHI"],

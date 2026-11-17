@@ -44,7 +44,7 @@ try:
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from itchi.constants import QUADRANTS, SAFFIR_SIMPSON_HAZARD_NODES, SAFFIR_SIMPSON_KT
+from itchi.constants import QUADRANTS, SAFFIR_SIMPSON_HAZARD_NODES_V021, SAFFIR_SIMPSON_KT
 from itchi.parametric_radii import compute_w06_reference_radii, compute_w06_wind_hazard_with_tail
 from itchi.plotting import SIAT_DANGER_COLORS
 from itchi.precipitation import PRECIP_MATRIX_V02, PRECIP_MATRIX_V02_P95, compute_precipitation_matrix_hazard
@@ -314,7 +314,8 @@ def _radial_hazard(vmax, lat=18.0, r=None, variant="v020"):
     elif variant == "w12":
         out = compute_w06_wind_hazard_with_tail(**kw, tail_end_wind_kt=KT_12MS)
     else:
-        out = compute_w06_wind_hazard_with_tail(**kw, tail_end_wind_kt=KT_12MS, hazard_scale="saffir_simpson")
+        out = compute_w06_wind_hazard_with_tail(**kw, tail_end_wind_kt=KT_12MS, hazard_scale="saffir_simpson",
+                                                absolute_nodes=SAFFIR_SIMPSON_HAZARD_NODES_V021)
     return r, out, ref
 
 
@@ -374,7 +375,8 @@ def synthetic_snapshot(vmax=100.0, center=(-100.0, 18.0), seed=4):
     out = {
         "v020": compute_itchi_snapshot_v02(p6, r24, a72, **common),
         "ss": compute_itchi_snapshot_v02(p6, r24, a72, **common, wind_tail_end_kt=KT_12MS,
-                                         wind_hazard_scale="saffir_simpson"),
+                                         wind_hazard_scale="saffir_simpson",
+                                         wind_absolute_nodes=SAFFIR_SIMPSON_HAZARD_NODES_V021),
         "p95": compute_itchi_snapshot_v02(p6, r24, a72, **common, precip_matrix=PRECIP_MATRIX_V02_P95),
     }
     return lon, lat, p6, out, case

@@ -34,6 +34,7 @@ from itchi.wind_profiles import KNOT_TO_MS as KNOT_TO_MS_PROFILES
 
 ROOT = Path(__file__).resolve().parents[1]
 B1 = ROOT / "configs" / "experiments" / "b1"
+V021 = ROOT / "configs" / "experiments" / "v021"
 
 Q6 = {"Q75": 8.0, "Q90": 18.0, "Q95": 28.0, "Q99": 50.0}
 Q24 = {"Q75": 20.0, "Q90": 40.0, "Q95": 55.0}
@@ -183,7 +184,7 @@ def test_knot_constant_matches_wind_profiles() -> None:
 def test_b1_overlays() -> None:
     settings = {c: itchi_v02_settings_from_config(load_experiment_config(B1 / f"{c}.yaml"))
                 for c in ("p0_w0", "p1_w0", "p0_w1", "p1_w1")}
-    assert settings["p0_w0"] == itchi_v02_settings_from_config()
+    assert settings["p0_w0"] == itchi_v02_settings_from_config(load_experiment_config(V021 / "v020.yaml"))
     for c in ("p1_w0", "p1_w1"):
         spec = settings[c]["precip_matrix"]
         assert spec["kind"] == "class_table"
