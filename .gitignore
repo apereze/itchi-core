@@ -168,3 +168,6 @@ temp/
 *.tmp
 *.bak
 *.backup
+
+# parches de trabajo (se aplican con git apply, no se versionan)
+*.patch

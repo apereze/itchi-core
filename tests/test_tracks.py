@@ -280,3 +280,23 @@ def test_read_track_table_rejects_unknown_extension(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         read_track_table(path)
+
+
+def test_filter_synoptic_times_drops_off_hour_records() -> None:
+    """
+    IBTrACS non-synoptic records (e.g. landfall at 06:30) are dropped even if
+    their hour is synoptic (Emily 2005, 2005-07-18 06:30).
+    """
+    df = pd.DataFrame(
+        {
+            "storm_id": ["A"] * 4,
+            "time": [
+                pd.Timestamp("2005-07-18 06:00"),
+                pd.Timestamp("2005-07-18 06:30"),
+                pd.Timestamp("2005-07-18 12:00"),
+                pd.Timestamp("2005-07-18 12:00:30"),
+            ],
+        }
+    )
+    out = filter_synoptic_times(df)
+    assert list(out["time"]) == [pd.Timestamp("2005-07-18 06:00"), pd.Timestamp("2005-07-18 12:00")]

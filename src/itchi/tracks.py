@@ -247,7 +247,8 @@ def filter_synoptic_times(
     synoptic_hours: Sequence[int] = SYNOPTIC_HOURS_UTC,
 ) -> pd.DataFrame:
     """
-    Filter a track DataFrame to synoptic times.
+    Filter a track DataFrame to synoptic times (allowed hour, minute 0,
+    second 0).
 
     Parameters
     ----------
@@ -269,7 +270,13 @@ def filter_synoptic_times(
     times = pd.to_datetime(df[time_col], errors="raise")
     allowed_hours = set(int(hour) for hour in synoptic_hours)
 
-    mask = times.dt.hour.isin(allowed_hours)
+    # Hour in the synoptic set and exactly on the hour: IBTrACS adds
+    # non-synoptic records (e.g. landfall at 06:30) whose hour would pass.
+    mask = (
+        times.dt.hour.isin(allowed_hours)
+        & (times.dt.minute == 0)
+        & (times.dt.second == 0)
+    )
 
     return df.loc[mask].copy().reset_index(drop=True)
 

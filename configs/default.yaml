@@ -14,7 +14,7 @@
 
 project:
   name: "itchi-core"
-  version: "0.2.1"
+  version: "0.2.2"
   description: "Core computational workflow for ITCHI v0.2"
 
 
@@ -82,10 +82,13 @@ precipitation:
     high: 95
     maximum: 99
 
-  # ITCHI v0.2: P6 ramp R4 escalated by persistence (R24) and antecedent rain (A72)
-  # (precipitation.compute_precipitation_matrix_hazard). Calibrated with
-  # municipality-cyclone pairs (scripts/negativos_w06.py); discrete rule:
-  # P6 in P95-P99 with R24 >= P95 and A72 >= P75 -> maximum.
+  # ITCHI v0.2: P6 ramp escalated by persistence (R24) and antecedent rain (A72)
+  # (precipitation.compute_precipitation_matrix_hazard).
+  # v0.2.2 (agreed after the v0.2.1 progress report; PRECIP_MATRIX_V02_P95):
+  # maximum at the 6-h P95; the escalation acts only on the P6 node below the
+  # maximum (P90 -> 0.8 with R24 >= P95 of 24 h and A72 >= P75 of 72 h); the
+  # R24 and A72 thresholds are those of v0.2. v0.2.0 (maximum at P99, P95 ->
+  # 0.8): PRECIP_MATRIX_V02 and configs/experiments/v021/v020.yaml.
   # "matrix_v02" (precipitation.compute_precipitation_matrix_hazard) or
   # "class_table" (precipitation.compute_precipitation_class_table_hazard,
   # block precipitation.class_table below; Block 1 experiments in
@@ -94,9 +97,9 @@ precipitation:
   hazard_model: "matrix_v02"          # "ramp_v01" | "matrix_v02" | "class_table"
   matrix_v02:
     snapshot_hours: 6                 # P6(T)  = precipitation in (T-6h, T]
-    p6_nodes: ["Q75", "Q90", "Q95", "Q99"]
-    base: [0.0, 0.0, 0.25, 0.5, 1.0]      # H_P at (0 mm, Q75, Q90, Q95, Q99): R4
-    escalated: [0.0, 0.0, 0.25, 0.8, 1.0] # full escalation: P95 -> 0.8
+    p6_nodes: ["Q75", "Q90", "Q95"]
+    base: [0.0, 0.0, 0.25, 1.0]       # H_P at (0 mm, Q75, Q90, Q95)
+    escalated: [0.0, 0.0, 0.8, 1.0]   # full escalation: P90 -> 0.8
     escalation:                       # weight 0 at start -> 1 at end (own percentiles; "0" = 0 mm)
       R24: ["Q90", "Q95"]             # R24(T) = precipitation in (T-24h, T]
       A72: ["0", "Q75"]               # A72(T) = precipitation in (T-78h, T-6h] (R72 climatology)
@@ -206,8 +209,27 @@ wind:
   # docs/verification_v02.md). null = tail ends at R_W06. The tail never
   # extends beyond R_W06: V_out = max(V(R_W06_q), tail_end_wind_kt).
   tail_end_wind_kt: null
-  # Same cut in m/s (e.g. 12.0 = 23.3 kt); give at most one of the two.
-  tail_end_wind_ms: null
+  # Same cut in m/s (12.0 = 23.3 kt); give at most one of the two.
+  # v0.2.2: tail cut at 12 m/s (v0.2.0: null).
+  tail_end_wind_ms: 12.0
+
+  # Normalization of the wind hazard (pipeline wind_hazard_scale):
+  #   "vmax"           v0.2: relative to the storm Vmax (above formula)
+  #   "saffir_simpson" v0.2.2: absolute nodes (wind kt, H_W) below, linear
+  #                    between nodes, constant above the last one; the tail
+  #                    below 34 kt is unchanged (h34 = H of the first node)
+  hazard_scale: "saffir_simpson"
+  # SIAT-style classes of 0.2 (v0.2.2): tail -> 1, TS (34-63) -> 2,
+  # moderate H1 (64-82) -> 3, high H2 (83-95) -> 4, maximum >= H3 (>= 96) -> 5;
+  # H_W = 1 from 137 kt (H5). Thresholds: NHC Saffir-Simpson Hurricane Wind
+  # Scale (1-min sustained wind), https://www.nhc.noaa.gov/aboutsshws.php.
+  # v0.2.1 proposal: constants.SAFFIR_SIMPSON_HAZARD_NODES_V021.
+  saffir_simpson_nodes:
+    - [34.0, 0.2]
+    - [64.0, 0.4]
+    - [83.0, 0.6]
+    - [96.0, 0.8]
+    - [137.0, 1.0]
 
   # Tropical-storm-force wind threshold
   reference_wind_kt: 34.0
