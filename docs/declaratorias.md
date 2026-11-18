@@ -94,8 +94,8 @@ con declaratoria (2.0 %). Salidas en `outputs/diagnostics/declaratorias_6h/`:
 | `verificacion_niveles_w06.csv` | POD, POFD, FAR y PSS por nivel |
 | `positivos_fuera_w06.csv` | declaratorias cuyo ciclón asignado nunca alcanza el municipio |
 
-Los resultados y su interpretación están en `docs/verification_v02.md`; las
-figuras se reproducen con `notebooks/second test/06_verificacion_metricas_figuras.ipynb`.
+Los resultados de la verificación de v0.2 están en `docs/historial/verification_v02.md`; el
+notebook de sus figuras (`notebooks/second test/06_verificacion_metricas_figuras.ipynb`) está en el tag `v0.2.2`.
 
 ## Limitaciones
 

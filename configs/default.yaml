@@ -1,21 +1,22 @@
 # ============================================================
 # ITCHI Core Configuration
-# Integrated Tropical Cyclone Hazard Index v0.2
+# Integrated Tropical Cyclone Hazard Index
 #
-# Which function uses these values:
-# - pipeline.compute_itchi_snapshot_v02 (v0.2 entry point). Its keyword
-#   defaults equal this file; itchi.config.itchi_v02_settings_from_config()
-#   turns this file into those keyword arguments, and
-#   tests/test_v02_snapshot.py checks that both stay equal.
-# - pipeline.compute_itchi_snapshot_from_grid keeps the v0.1 defaults
-#   (Q90/Q95/Q99 ramp, wind only inside R34) for backward compatibility and
-#   does not read this file.
+# Current scheme (since v0.2.2):
+# - precipitation: P6 x (R24, A72) matrix, maximum at the 6-h P95;
+# - wind: absolute hazard homologated with Saffir-Simpson, tail cut at 12 m/s;
+# - attribution radius: ROCLOUD with R_W06 as a floor by quadrant.
+#
+# pipeline.compute_itchi_snapshot has these values as keyword defaults;
+# itchi.config.itchi_settings_from_config() turns this file (or an overlay
+# under configs/experiments/) into those keyword arguments, and
+# tests/test_pipeline.py checks that both stay equal.
 # ============================================================
 
 project:
   name: "itchi-core"
-  version: "0.2.2"
-  description: "Core computational workflow for ITCHI v0.2"
+  version: "0.3.0"
+  description: "Core computational workflow for ITCHI"
 
 
 # ============================================================
@@ -26,134 +27,55 @@ domain:
   name: "mexico"
   spatial_resolution_deg: 0.1
 
-  # Approximate domain for Mexico and surrounding tropical cyclone regions
-  lon_min: -135.0
-  lon_max: -65.0
+  # Domain of the MSWEP percentiles (Mexico and surrounding basins)
+  lon_min: -140.0
+  lon_max: -60.0
   lat_min: 5.0
   lat_max: 35.0
 
 
 # ============================================================
-# Time configuration
+# Time
 # ============================================================
 
 time:
-  # ITCHI will be evaluated at tropical-cyclone synoptic times
-  synoptic_hours_utc:
-    - 0
-    - 6
-    - 12
-    - 18
+  # ITCHI is evaluated at tropical-cyclone synoptic times
+  synoptic_hours_utc: [0, 6, 12, 18]
 
-  target_frequency_hours: 6
-
-  # v0.2: precipitation enters as the 6-h accumulation that ends at the
-  # synoptic time T, P6 = (T-6h, T]. R24 = (T-24h, T] and the exclusive
-  # antecedent A72 = (T-78h, T-6h] only escalate H_P.
-  precipitation_time_handling: "accumulation"
+  # P6 = (T-6h, T]; R24 = (T-24h, T]; exclusive antecedent A72 = (T-78h, T-6h]
   precipitation_window: "(T-6h, T]"
-
-  # The accumulation window must end exactly at T (no nearest-time matching).
-  temporal_alignment: "window_end"
-  max_time_tolerance_hours: 0.0
 
 
 # ============================================================
-# Precipitation configuration
+# Precipitation (MSWEP V3, May-November, 2000-2024)
 # ============================================================
 
 precipitation:
-  source: "mswep"
-
-  # Name expected inside precipitation files.
-  # This can be changed depending on the dataset.
+  source: "mswep_v3"
+  accumulations_dir: "D:/MSWEP_V316_6H"     # mswep_v3_6h_AAAA.nc
   variable_name: "precipitation"
 
-  # v0.2: 6-h accumulation ending at T (see time.precipitation_window).
-  temporal_support: "accumulation_6h"
-
-  # Units must be checked for each dataset.
-  # For downscaled products, the field should be comparable with the climatology.
-  units: "dataset_dependent"
-
-  # v0.1 ramp (Q90 -> 0, Q95 -> 0.5, Q99 -> 1); used when hazard_model = "ramp_v01"
-  percentiles:
-    low: 90
-    high: 95
-    maximum: 99
-
-  # ITCHI v0.2: P6 ramp escalated by persistence (R24) and antecedent rain (A72)
-  # (precipitation.compute_precipitation_matrix_hazard).
-  # v0.2.2 (agreed after the v0.2.1 progress report; PRECIP_MATRIX_V02_P95):
+  # P6 x (R24, A72) matrix (precipitation.PRECIP_MATRIX):
   # maximum at the 6-h P95; the escalation acts only on the P6 node below the
-  # maximum (P90 -> 0.8 with R24 >= P95 of 24 h and A72 >= P75 of 72 h); the
-  # R24 and A72 thresholds are those of v0.2. v0.2.0 (maximum at P99, P95 ->
-  # 0.8): PRECIP_MATRIX_V02 and configs/experiments/v021/v020.yaml.
-  # "matrix_v02" (precipitation.compute_precipitation_matrix_hazard) or
-  # "class_table" (precipitation.compute_precipitation_class_table_hazard,
-  # block precipitation.class_table below; Block 1 experiments in
-  # configs/experiments/b1/). "ramp_v01" is the v0.1 Q90/Q95/Q99 ramp of
-  # compute_itchi_snapshot_from_grid.
-  hazard_model: "matrix_v02"          # "ramp_v01" | "matrix_v02" | "class_table"
-  matrix_v02:
-    snapshot_hours: 6                 # P6(T)  = precipitation in (T-6h, T]
+  # maximum (P90 -> 0.8 with R24 >= P95 of 24 h and A72 >= P75 of 72 h).
+  matrix:
     p6_nodes: ["Q75", "Q90", "Q95"]
     base: [0.0, 0.0, 0.25, 1.0]       # H_P at (0 mm, Q75, Q90, Q95)
     escalated: [0.0, 0.0, 0.8, 1.0]   # full escalation: P90 -> 0.8
     escalation:                       # weight 0 at start -> 1 at end (own percentiles; "0" = 0 mm)
-      R24: ["Q90", "Q95"]             # R24(T) = precipitation in (T-24h, T]
-      A72: ["0", "Q75"]               # A72(T) = precipitation in (T-78h, T-6h] (R72 climatology)
+      R24: ["Q90", "Q95"]
+      A72: ["0", "Q75"]
     combine: "all"                    # "all": product of weights; "any": maximum
-    climatology_6h: "data/processed/mswep_v3_6h_percentiles_may_nov.nc"
-    climatology_24h: "data/processed/mswep_v3_24h_percentiles_may_nov.nc"
-    climatology_72h: "data/processed/mswep_v3_72h_percentiles_may_nov.nc"
-    # p_wet_raw: wet-window percentiles without the sufficiency filter; it is
-    # the variable used for every v0.2 result (notebooks 05-08,
-    # docs/verification_v02.md). p_wet is NaN where the effective sample is
-    # too small (e.g. 72-h P99).
-    climatology_variable: "p_wet_raw"
-    # H_P where P6 or a used 6-h percentile is NaN (e.g. outside MSWEP or a
-    # pixel without climatology): 0.0 = no precipitation hazard (as in
-    # notebooks 05-08); null keeps NaN.
+    # H_P where P6 or a used 6-h percentile is NaN (outside MSWEP or without
+    # climatology): 0.0 = no precipitation hazard; null keeps NaN.
     nan_hazard_value: 0.0
 
-  # Class table P6 x R24 x A72, used only with hazard_model = "class_table".
-  # Format in precipitation.py (PRECIP_TABLES_B1) and docs/experimento_b1.md.
-  class_table: null
-
-  epsilon: 1.0e-6
-
-
-# ============================================================
-# Forecast and downscaling configuration
-# ============================================================
-
-forecast:
-  enabled: false
-
-  # Forecast products should be handled by valid_time.
-  use_valid_time: true
-
-  # These are only required when working with operational forecasts.
-  require_init_time: false
-  require_lead_time: false
-
-
-downscaling:
-  enabled: false
-
-  # Options can be defined later:
-  # external_product, quantile_mapping, statistical_model, neural_model
-  method: null
-
-  # Target grid for the downscaled precipitation product
-  target_grid: "mswep_0p1deg"
-
-  # Downscaling or bias correction must occur before precipitation hazard calculation.
-  apply_before_hazard_normalization: true
-
-  # The climatology should be statistically compatible with the precipitation product.
-  climatology_support: "same_as_precipitation_product"
+  # Local percentiles of 6, 24 and 72 h (wet windows, without the
+  # sufficiency filter: p_wet_raw)
+  climatology_6h: "data/processed/mswep_v3_6h_percentiles_may_nov.nc"
+  climatology_24h: "data/processed/mswep_v3_24h_percentiles_may_nov.nc"
+  climatology_72h: "data/processed/mswep_v3_72h_percentiles_may_nov.nc"
+  climatology_variable: "p_wet_raw"
 
 
 # ============================================================
@@ -162,29 +84,9 @@ downscaling:
 
 geometry:
   distance_units: "km"
-
-  # Main version uses quadrant-specific radii.
-  use_quadrant_radii: true
-
+  quadrant_convention: ["RNE", "RSE", "RSW", "RNW"]
   # Filling of missing R34 quadrants (and of ROCLOUD with mode "never")
   radius_fill_strategy: "mean_available"
-
-  # Expected quadrant order
-  quadrant_convention:
-    - "RNE"
-    - "RSE"
-    - "RSW"
-    - "RNW"
-
-  # R34 defines the direct region.
-  direct_region_radius: "R34"
-
-  # ROCLOUD defines the external attribution limit, with R_W06 as a floor by
-  # quadrant (parametric_radii.attribution_radius_mode = "floor"):
-  # R_attr_q = R_W06_q where ROCLOUD_q is missing (or 0, no detection) or
-  # smaller than R_W06_q; otherwise ROCLOUD_q. Never below R_direct_q.
-  outer_attribution_radius: "ROCLOUD"
-  attribution_floor: "R_W06"
 
 
 # ============================================================
@@ -192,38 +94,16 @@ geometry:
 # ============================================================
 
 wind:
-  enabled: true
-
-  # v0.1: wind hazard only inside R34. v0.2: W06 tail that ends at R_W06.
-  model: "w06_tail"                   # "v01" | "w06_tail" (pipeline wind_model)
-  active_region: "inside_r_w06"       # v0.1: "inside_r34"
-
-  # v0.2 tail: H_W = h34 + (1 - h34)(V - 34)/(Vmax - 34) inside R_direct,
-  # H_W = h34 (V - V_out)/(34 - V_out) outside, V_out = wind at R_W06_q.
-  # R_W06 bounds the wind only; the attribution radius (ROCLOUD with R_W06
-  # floor) bounds the indirect precipitation.
-  tail_h34: 0.2
-  tail_end_radius: "R_W06"
-
-  # Optional cut of the tail at a wind speed (kt), e.g. 17 (decision D1 in
-  # docs/verification_v02.md). null = tail ends at R_W06. The tail never
-  # extends beyond R_W06: V_out = max(V(R_W06_q), tail_end_wind_kt).
+  # Absolute hazard homologated with Saffir-Simpson (wind.normalize_wind_hazard_absolute),
+  # local wind of the W06 profile calibrated to R34, by quadrant.
+  # End of the tail below 34 kt (m/s, 12.0 = 23.3 kt); give at most one of
+  # the two. The tail never extends beyond R_W06_q.
   tail_end_wind_kt: null
-  # Same cut in m/s (12.0 = 23.3 kt); give at most one of the two.
-  # v0.2.2: tail cut at 12 m/s (v0.2.0: null).
   tail_end_wind_ms: 12.0
-
-  # Normalization of the wind hazard (pipeline wind_hazard_scale):
-  #   "vmax"           v0.2: relative to the storm Vmax (above formula)
-  #   "saffir_simpson" v0.2.2: absolute nodes (wind kt, H_W) below, linear
-  #                    between nodes, constant above the last one; the tail
-  #                    below 34 kt is unchanged (h34 = H of the first node)
-  hazard_scale: "saffir_simpson"
-  # SIAT-style classes of 0.2 (v0.2.2): tail -> 1, TS (34-63) -> 2,
+  # SIAT-style classes of 0.2: tail -> 1, TS (34-63) -> 2,
   # moderate H1 (64-82) -> 3, high H2 (83-95) -> 4, maximum >= H3 (>= 96) -> 5;
   # H_W = 1 from 137 kt (H5). Thresholds: NHC Saffir-Simpson Hurricane Wind
   # Scale (1-min sustained wind), https://www.nhc.noaa.gov/aboutsshws.php.
-  # v0.2.1 proposal: constants.SAFFIR_SIMPSON_HAZARD_NODES_V021.
   saffir_simpson_nodes:
     - [34.0, 0.2]
     - [64.0, 0.4]
@@ -231,72 +111,16 @@ wind:
     - [96.0, 0.8]
     - [137.0, 1.0]
 
-  # Tropical-storm-force wind threshold
-  reference_wind_kt: 34.0
-
-  # Preferred method for v0.1
-  method: "radial_profile"
-
-  clip_min: 0.0
-  clip_max: 1.0
-
 
 # ============================================================
-# ITCHI parameters
+# ITCHI weights
 # ============================================================
 
 itchi:
-  # Neutral weights for v0.1
   alpha_wind: 1.0
   beta_precip_direct: 1.0
   lambda_direct: 1.0
   mu_indirect: 1.0
-
-  clip_min: 0.0
-  clip_max: 1.0
-
-
-# ============================================================
-# Input paths
-# ============================================================
-
-paths:
-  tracks: "data/raw/tracks/"
-  rocloud: "data/raw/rocloud/"
-  wind: "data/raw/wind/"
-  precipitation: "data/raw/precipitation/"
-  climatology: "outputs/climatology/"
-
-
-# ============================================================
-# Output paths
-# ============================================================
-
-outputs:
-  itchi_gridded: "outputs/itchi_gridded/"
-  event_products: "outputs/event_products/"
-  diagnostics: "outputs/diagnostics/"
-  figures: "outputs/figures/"
-
-  # Preferred initial output format.
-  # Options can later include: netcdf, zarr, parquet.
-  format: "zarr"
-
-  overwrite: false
-
-
-# ============================================================
-# Quality control
-# ============================================================
-
-quality_control:
-  check_index_bounds: true
-  check_precipitation_bounds: true
-  check_wind_bounds: true
-  check_masks_are_exclusive: true
-  check_exterior_region_is_zero: true
-  check_r34_le_rocloud: true
-  check_required_variables: true
 
 
 # ============================================================
@@ -304,43 +128,36 @@ quality_control:
 # ============================================================
 
 parametric_radii:
-  enabled: true
-  profile: "willoughby2006"
-
-  # Empirical Rmax used when observed RMW is missing: "w06" | "pa21"
-  rmax_variant: "w06"
-  use_observed_rmw: true
-  rmw_unit: "km"            # IBTrACS usa_rmw is in nautical miles
-
-  # Calibrate the outer decay length X1 to observed mean R34 when available
-  calibrate_to_r34: true
-  r34_unit: "nm"
-
-  # Outer-size threshold in m s-1: 2.0 (PA21) or 2.572 (5 kt, Knaff et al. 2014)
-  outer_threshold_ms: 2.0
-
   # Role of R_W06 in the attribution radius, by quadrant:
-  #   "never"    ROCLOUD only; missing quadrants filled with the mean of the
-  #              valid ones (v0.1 behaviour)
+  #   "floor"    R_W06 where ROCLOUD is missing (or 0) or smaller (default)
   #   "fallback" R_W06 only where ROCLOUD is missing
-  #   "floor"    R_W06 where ROCLOUD is missing or smaller (v0.2 default)
-  #   "always"   R_W06 everywhere (setting of the v0.2 verification studies)
+  #   "always"   R_W06 everywhere
+  #   "never"    ROCLOUD only; missing quadrants filled with the valid ones
   attribution_radius_mode: "floor"
 
-  # Use the parametric R34 (r_w06 settings below) as fallback_direct_radius_km
-  # when observed R34 is missing
+  # Use the parametric R34 as direct-radius fallback when observed R34 is missing
   use_as_direct_fallback: true
 
-  # Wind hazard profile: "rankine" (wind.py, v0.1) | "w06" (v0.2, with tail)
-  wind_profile: "w06"
-
-  # Definition of R_W06 in compute_itchi_snapshot_v02: radius where the W06
-  # profile falls to outer_threshold_ms. PA21 configuration (empirical Rmax,
-  # no R34 calibration), as in the v0.2 verification (pa21_r2_km). The keys
-  # above (rmax_variant, use_observed_rmw, calibrate_to_r34) belong to the
-  # parametric radii of the v0.1 notebooks and are not used for R_W06.
+  # R_W06: radius where the W06 profile falls to outer_threshold_ms, PA21
+  # configuration (empirical Rmax, no R34 calibration)
   r_w06:
     rmax_variant: "pa21"
     use_observed_rmw: false
     calibrate_to_r34: false
     outer_threshold_ms: 2.0
+
+
+# ============================================================
+# Paths
+# ============================================================
+
+paths:
+  tracks: "data/raw/tracks/"
+  rocloud: "data/external/Rocloud/"
+  municipalities: "data/external/mun23gw/mun23gw.shp"
+  declaratorias: "outputs/diagnostics/declaratorias_6h/declaratorias_ct_eventos.csv"
+
+outputs:
+  cases: "outputs/diagnostics/casos/"
+  diagnostics: "outputs/diagnostics/"
+  figures: "outputs/figures/"

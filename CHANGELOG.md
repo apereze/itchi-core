@@ -7,6 +7,93 @@ and this project uses semantic versioning principles while the API is under acti
 
 ---
 
+## [0.3.0] - 2026-11-18
+
+Development line v0.3 (`docs/plan_v0.3.md`): hazard defined by climatological
+rarity (return periods) and absolute wind thresholds, on a catalog of physical
+states under every tropical cyclone 2000-2025.
+
+### Added
+
+- F1, rainfall return periods (`docs/periodos_retorno.md`):
+  `itchi.return_periods` (running sums, declustered peaks, top-K, sample
+  L-moments, GEV and GPD by L-moments, return levels and periods,
+  conversions; NumPy only); `scripts/periodos_retorno.py` (seasonal maxima
+  and the K largest independent peaks of 6/24/72-h MSWEP V3 per pixel,
+  `mswep_v3_return_periods_may_nov.nc`); `scripts/figuras_retorno.py` and
+  `notebooks/v03/10_periodos_retorno.ipynb`;
+  `tests/test_return_periods.py`, `tests/test_periodos_retorno_script.py`.
+- F1 revision before the MSWEP run: independent events per season above the
+  v0.2 percentiles (`events_above_pct`, direct count in the same pass) for R3;
+  `gpd_full_threshold` flags pixels where fewer than K+1 wet peaks put the GPD
+  threshold at the 1 mm floor; the POT rate uses seasons with data per pixel;
+  statistics over Mexican land (`agregar_mascara`, mun23gw) instead of the box;
+  a priori criteria for R4 and R5 from a Monte Carlo (`docs/periodos_retorno.md`).
+
+### Removed (breaking; everything is kept in the tag `v0.2.2`)
+
+Only the scheme of v0.2.2 remains; v0.1, v0.2.0 and the experiments of
+Block 1 and of the v0.2.1 progress report are retired.
+
+- v0.1: `pipeline.compute_itchi_snapshot` (Q90/Q95/Q99 ramp) and
+  `compute_itchi_snapshot_from_grid`, `precipitation.compute_precipitation_hazard`,
+  the modified-Rankine wind of `wind.py` (`compute_radial_wind_profile`,
+  `normalize_wind_hazard`, `apply_wind_mask`, `compute_wind_hazard_from_profile`),
+  `parametric_radii.compute_w06_wind_hazard`, `build_parametric_rocloud_record`
+  and `parametric_direct_fallback_km`, the event pipeline (`compiler.py`,
+  `aggregation.py`, `snapshot_inputs.py`, `io.compiled_event_to_dataset`,
+  `io.write_compiled_event`), `chavas_outer.py`, `itchi_size_helpers.py`,
+  `constants.PRECIP_PERCENTILE_*` and `examples/` of v0.1.
+- v0.2.0: matrix with maximum at P99 (`PRECIP_MATRIX_V02`, `RAMP_R4_NODES`),
+  wind relative to Vmax (`wind.normalize_wind_hazard_with_tail`,
+  `hazard_scale`, `wind.tail_h34`).
+- Experiments: class tables of Block 1 (`PRECIP_TABLE_V02`, `PRECIP_TABLES_B1`,
+  `build_precipitation_class_table`, `compute_precipitation_class_table_hazard`,
+  `compute_percentile_coordinate`, `compute_precipitation_hazard_from_spec`,
+  `config.class_table_spec_from_config`), the v0.2.1 nodes
+  (`SAFFIR_SIMPSON_HAZARD_NODES_V021`), `configs/experiments/b1/` and `v021/`,
+  scripts `experimento_b1.py`, `figuras_b1.py`, `casos_v021.py`,
+  `figuras_v021.py`, `negativos_w06.py`, `percentiles.py` (MSWEP V2.8 daily),
+  `prueba_rapida_6h.py`, the notebooks of `first test/`, `second test/`,
+  `third test/` (except 10) and 00–03, the root-level patches and figures.
+
+### Changed
+
+- `pipeline.compute_itchi_snapshot` (was `compute_itchi_snapshot_v02`): its
+  keyword defaults are the v0.2.2 scheme (maximum at the 6-h P95,
+  Saffir-Simpson wind, tail cut at 12 m/s = `constants.TAIL_END_WIND_MS`) and
+  equal `configs/default.yaml`; no `wind_tail_h34` nor `wind_hazard_scale`;
+  metadata without `itchi_formulation`, `wind_hazard_scale` or
+  `precipitation_hazard_source`.
+- `precipitation.PRECIP_MATRIX` (was `PRECIP_MATRIX_V02_P95`) is the default of
+  `compute_precipitation_matrix_hazard`.
+- `parametric_radii.compute_w06_wind_hazard_with_tail`: absolute hazard only
+  (no `h34` nor `hazard_scale`).
+- `config.itchi_settings_from_config` (was `itchi_v02_settings_from_config`);
+  `configs/default.yaml` keeps only the keys of the current scheme
+  (`precipitation.matrix` instead of `precipitation.matrix_v02`; climatology,
+  MSWEP and data paths); experiments remain overlays under `configs/experiments/`.
+- Documentation of v0.1–v0.2.2 moved to `docs/historial/` (with a README);
+  new `docs/methodology.md` for the current scheme; README, `docs/plan_v0.3.md`,
+  `docs/development.md` and `notebooks/README.md` updated; notebook 10 moved to
+  `notebooks/v03/`.
+- Version 0.3.0 (`pyproject.toml`, `constants.ITCHI_VERSION`, `configs/default.yaml`, README).
+
+### Added (cleanup)
+
+- `itchi.cases` and `itchi.municipal` (from `scripts/casos_v021.py`): case
+  catalogue (Emily 2005, Alex 2010, Manuel 2013, Odile 2014, Patricia 2015,
+  Earl 2016, Cristóbal 2020) and landslides, track with W06/PA21 radii and
+  ROCLOUD, selection of positions over Mexico, ITCHI on the grid by
+  experiment (default: `configs/default.yaml`), municipal aggregation, class
+  counts, ordinal table with declaratorias and lead times; paths from
+  `configs/default.yaml` (`CaseConfig`). `scripts/casos.py` (command line) and
+  `tests/test_cases.py`.
+- `examples/smoke_test_synthetic.py` with the current API; `tests/test_pipeline.py`,
+  `tests/test_precipitation.py` and `tests/test_wind.py` for the current scheme.
+
+---
+
 ## [0.2.2] - 2026-11-15
 
 Options of the v0.2.1 progress report (Added) and the scheme agreed after it,
@@ -338,7 +425,7 @@ options are opt-in in the pipeline; the defaults reproduce v0.1.
 
 ```bash
 pip install -e .
-````
+```
 
 ---
 

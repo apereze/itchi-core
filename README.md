@@ -7,829 +7,133 @@
 
 **Integrated Tropical Cyclone Hazard Index**
 
-Repository for the development of the computational core of **ITCHI**, a physically based tropical-cyclone hazard index. Current version: **0.2.2** (formulation v0.2; 0.2.1 adds the v0.2 entry point, consistency fixes and the Block 1 experiments; 0.2.2 sets in `configs/default.yaml` the precipitation maximum at the 6-h P95, the Saffir-Simpson wind classes and the tail cut at 12 m/s, see [`CHANGELOG.md`](CHANGELOG.md)).
+Computational core of **ITCHI**, a bounded index in [0, 1] of the hazard of
+tropical cyclones that affect Mexico, on a 0.1° grid and by municipality, at
+synoptic times. Version **0.3.0**: development line v0.3
+([`docs/plan_v0.3.md`](docs/plan_v0.3.md)) on the scheme agreed in v0.2.2;
+changes in [`CHANGELOG.md`](CHANGELOG.md).
 
-**What is new in v0.2.** Entry point: `pipeline.compute_itchi_snapshot_v02` (P6, R24, A72 and their percentile climatologies; keyword defaults equal [`configs/default.yaml`](configs/default.yaml)). `compute_itchi_snapshot_from_grid` keeps the v0.1 defaults, with the v0.2 options as opt-in arguments. Details in [`docs/methodology.md`](docs/methodology.md), results in [`docs/verification_v02.md`](docs/verification_v02.md), changes in [`CHANGELOG.md`](CHANGELOG.md):
+## Current scheme
 
-- **Precipitation matrix.** The 6-h rain (P6) is compared with the pixel's own percentiles (alert from P75: P75 → 0, P90 → 0.25, P95 → 0.5, P99 → 1). The P95–P99 band is escalated towards the maximum (P95 → 0.8) when the rain persists (24-h accumulation R24 ≥ P95) over wet ground (72-h antecedent A72 ≥ P75). Continuous form in `precipitation.compute_precipitation_matrix_hazard`.
-- **Calibration with disaster declarations.** 381 929 municipality–cyclone pairs (2000–2025, 2 % with a TC-associated declaration): the escalation raises the maximum-level Peirce skill score from 0.41 to 0.51 (0.55 → 0.67 for disasters) and leaves the lower levels unchanged.
-- **W06 wind with an outer tail.** W06 profile calibrated to the observed R34 by quadrant; hazard decays from `h34` at R34 to zero at R_W06 (radius where the W06/PA21 wind falls to 2 m/s) and enters the indirect component.
-- **Attribution radius.** ROCLOUD by quadrant with R_W06 as a floor: where ROCLOUD is missing, zero or smaller than R_W06, R_W06 is used (`radii.resolve_attribution_radius_with_w06`, mode `"floor"`). R_W06 bounds the wind; the attribution radius bounds the indirect precipitation.
-- **Multi-duration climatology and verification scripts.** MSWEP V3.16 percentiles of 6, 24 and 72 h; declarations vs rain; municipality–cyclone pairs.
-- **Case studies.** Cristóbal 2020 and Odile 2014, v0.1 vs v0.2, by snapshot and by position (notebooks 05–08).
-- **Open for v0.3.** The default wind tail gives wind hazard to 96 % of the pairs and removes the skill of the lowest class; cutting it at 17 kt is proposed. See the decision list in [`docs/verification_v02.md`](docs/verification_v02.md#6-open-decisions-for-v03).
+Defined in [`configs/default.yaml`](configs/default.yaml), which equals the
+keyword defaults of `pipeline.compute_itchi_snapshot`; details in
+[`docs/methodology.md`](docs/methodology.md).
 
----
+| Component | Definition |
+|---|---|
+| Precipitation | P6 × (R24, A72) matrix against local MSWEP V3 percentiles; maximum at the 6-h P95; with R24 ≥ P95₂₄ and A72 ≥ P75₇₂ the P90 node rises from 0.25 to 0.8 |
+| Wind | Absolute hazard homologated with Saffir-Simpson on the local W06 wind (calibrated to R34 by quadrant): tail (12 m/s to 34 kt) → 1, TS → 2, H1 → 3, H2 → 4, ≥ H3 → 5 |
+| Regions | Direct: R34; attribution: ROCLOUD with R_W06 (W06, 2 m/s, PA21) as a floor by quadrant |
+| Index | Bounded union of the direct and indirect components; classes in steps of 0.2 |
+| Municipality | Maximum over the cells of the municipality |
 
-## Table of contents
-
-- [Quick start](#quick-start)
-- [Overview](#overview)
-- [Repository scope](#repository-scope)
-- [Methodological principle](#methodological-principle)
-- [Precipitation treatment](#precipitation-treatment)
-- [Temporal resolution](#temporal-resolution)
-- [Precipitation normalization](#precipitation-normalization)
-- [Index components](#index-components)
-- [Conceptual formula](#conceptual-formula)
-- [Computational workflow](#computational-workflow)
-- [Repository structure](#repository-structure)
-- [Expected inputs](#expected-inputs)
-- [Expected outputs](#expected-outputs)
-- [Current project status](#current-project-status)
-- [Installation](#installation)
-- [Reproducible examples](#reproducible-examples)
-- [Tests and quality control](#tests-and-quality-control)
-- [Data requirements](#data-requirements)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [Authorship](#authorship)
-- [License](#license)
-- [References](#references)
-
----
+The precipitation thresholds in percentiles are provisional: v0.3 replaces
+them by return periods (F1, [`docs/periodos_retorno.md`](docs/periodos_retorno.md)).
 
 ## Quick start
 
 ```bash
-# Clone the repository
 git clone https://github.com/apereze/itchi-core.git
 cd itchi-core
-
-# Create and activate environment
 conda env create -f environment.yml
 conda activate itchi
-
-# Install package in development mode
 pip install -e .
-
-# Verify installation
-python -c "import itchi; print('ITCHI installed successfully')"
-
-# Run tests
 python -m pytest tests/
-
-# Run synthetic smoke test
 python examples/smoke_test_synthetic.py
 ```
 
-Run the table-driven workflow:
-
-```bash
-python examples/smoke_test_from_tables.py \
-  --output-path outputs/events/smoke_test_from_tables.nc
-```
-
-Read and validate an exported compiled event:
-
-```bash
-python examples/read_compiled_event.py \
-  --input-path outputs/events/smoke_test_from_tables.nc
-```
-
-Optional diagnostic figure:
-
-```bash
-python examples/smoke_test_from_tables.py \
-  --plot \
-  --figure-path outputs/figures/smoke_test_from_tables.png \
-  --output-path outputs/events/smoke_test_from_tables.nc
-```
-
-ITCHI v0.2 for one synoptic time T (P6, R24 and A72 from MSWEP V3.16 6-h accumulations):
+One synoptic time:
 
 ```python
 from itchi.climatology import load_percentile_climatology
-from itchi.config import itchi_v02_settings_from_config, load_default_config
-from itchi.pipeline import compute_itchi_snapshot_v02
+from itchi.config import itchi_settings_from_config, load_experiment_config
+from itchi.pipeline import compute_itchi_snapshot
 from itchi.precipitation import compute_antecedent_precipitation
 
-# p6: 6-h accumulations (time, lat, lon); the window ends at each time stamp
+# p6: DataArray (time, lat, lon) of 6-h accumulations ending at each time stamp
 r24 = compute_antecedent_precipitation(p6, hours=24, exclude_current=False)
 a72 = compute_antecedent_precipitation(p6, hours=72, exclude_current=True)
-clim = {d: load_percentile_climatology(
-            f"data/processed/mswep_v3_{d}h_percentiles_may_nov.nc", template=p6)
-        for d in (6, 24, 72)}
-
-result = compute_itchi_snapshot_v02(
-    p6.sel(time=T), r24.sel(time=T), a72.sel(time=T),
-    quantiles_6h=clim[6], quantiles_24h=clim[24], quantiles_72h=clim[72],
-    lon=lon2d, lat=lat2d, center_lon=row.lon, center_lat=row.lat,
-    vmax_kt=row.vmax_kt, rmw_km=row.rmw_km,
-    r34_by_quadrant=r34_nm, rocloud_by_quadrant=rocloud_km,
-    **itchi_v02_settings_from_config(load_default_config()),  # optional: same as defaults
+q6, q24, q72 = (load_percentile_climatology(f"data/processed/mswep_v3_{d}h_percentiles_may_nov.nc",
+                                            variable="p_wet_raw", template=p6.isel(time=0))
+                for d in (6, 24, 72))
+t = "2020-06-07T18:00"
+res = compute_itchi_snapshot(
+    p6.sel(time=t), r24.sel(time=t), a72.sel(time=t),
+    quantiles_6h=q6, quantiles_24h=q24, quantiles_72h=q72,
+    lon=lon2d, lat=lat2d, center_lon=-90.4, center_lat=29.1, vmax_kt=45.0,
+    r34_by_quadrant={"RNE": 150, "RSE": 140, "RSW": 0, "RNW": 90}, r34_unit="nm",
+    rocloud_by_quadrant={"RNE": 900.0, "RSE": 800.0, "RSW": None, "RNW": 600.0},
 )
+res["ITCHI"], res["H_P"], res["H_W"], res["R_attr_by_quadrant"]
+
+# An experiment is an overlay on configs/default.yaml with only the keys that change
+settings = itchi_settings_from_config(load_experiment_config("configs/experiments/mi_experimento.yaml"))
+res_exp = compute_itchi_snapshot(..., **settings)
 ```
 
-`lon2d` and `lat2d` must be on the same grid and of the same type (NumPy or xarray) as `p6`.
+Case studies on the grid and by municipality (Emily 2005, Alex 2010,
+Manuel 2013, Odile 2014, Patricia 2015, Earl 2016, Cristóbal 2020):
 
-The `outputs/` directory is ignored by Git.
+```bash
+cd scripts
+python casos.py                                       # cache in outputs/diagnostics/casos/
+python casos.py --casos ODILE2014 --forzar
+```
 
----
+## Workflow and data
 
-## Overview
+Run the scripts from `scripts/` in the `itchi` environment (Anaconda Prompt
+on Windows), as their docstrings show.
 
-**ITCHI** stands for **Integrated Tropical Cyclone Hazard Index**.
-
-The initial version, **ITCHI v0.1**, is designed as a continuous physically based index bounded between `0` and `1`. It represents tropical-cyclone hazard over a spatial grid and at cyclone-centered synoptic times.
-
-The index integrates three main hazard sources:
-
-1. **Direct precipitation**, associated with rainfall inside the cyclone direct region.
-2. **Wind**, estimated from a normalized wind-hazard field.
-3. **Indirect precipitation**, associated with external rainbands inside the cyclone-attributable precipitation region.
-
-**ITCHI v0.2** keeps this structure and changes how precipitation and wind hazards are computed: a precipitation matrix that escalates intense rain by persistence and antecedent rain, calibrated against disaster declarations, and a W06 wind profile whose tail extends the wind hazard into the indirect region.
-
-The objective of this repository is to build the ITCHI calculation in a modular, traceable, reproducible and scientifically explicit way.
-
----
-
-## Repository scope
-
-This repository contains the computational elements required to build the **ITCHI core index**.
-
-### Included
-
-- Reading and standardization of tropical-cyclone track tables.
-- Reading and cleaning of wind radii, especially `R34`.
-- Resolution of the effective direct radius `R_direct`.
-- Treatment of tropical depressions without `R34` using `RMW` or an explicit fallback.
-- Reading and cleaning of external structural radii such as `ROCLOUD`.
-- Snapshot-based precipitation selection.
-- Reading and writing scientific products with `xarray`.
-- Normalized precipitation-hazard calculation.
-- Normalized wind-hazard calculation or ingestion.
-- Construction of spatial masks:
-  - direct region;
-  - indirect region;
-  - exterior region.
-- Computation of physical hazard components.
-- Final `ITCHI` calculation.
-- Physical and computational quality control.
-- Compilation of multiple snapshots into an event.
-- Event-level derived products: `ITCHI_max` and `ITCHI_acc`.
-- Synthetic scripts and notebooks for validation.
-- Table-driven synthetic workflows that approximate the future real-data workflow.
-- v0.2: precipitation matrix (P6 escalated by R24 and A72), W06 wind with outer tail, indirect wind component.
-- v0.2: MSWEP V3.16 6-h accumulations and 6/24/72-h local percentiles.
-- v0.2: verification against TC-associated disaster declarations (municipality–cyclone pairs) and real cases (Cristóbal 2020, Odile 2014).
-
-### Not included yet
-
-- Cross-validated calibration and confidence intervals (bootstrap by cyclone).
-- Machine-learning models.
-- Advanced statistical calibration.
-- Final publication-quality visualization products.
-- Dashboard or web application.
-- Full scientific manuscript.
-
-These elements may be developed later in separate modules, notebooks or repositories.
-
----
-
-## Methodological principle
-
-ITCHI v0.1 distinguishes three regions around a tropical cyclone:
-
-| Region | Conceptual condition | Interpretation |
+| Step | Script | Product |
 |---|---|---|
-| Direct region | `r <= R_direct_q` | Direct hazard region driven by wind and precipitation |
-| Indirect region | `R_direct_q < r <= ROCLOUD_q` | External precipitation region attributable to the cyclone |
-| Exterior region | `r > ROCLOUD_q` | Region with no contribution to the index |
+| 6-h accumulations of MSWEP V3.16 | `scripts/mswep_v3_6h_accum.py` | `D:/MSWEP_V316_6H/mswep_v3_6h_AAAA.nc` |
+| Local percentiles of 6, 24 and 72 h | `scripts/percentiles_6h.py` | `data/processed/mswep_v3_{6,24,72}h_percentiles_may_nov.nc` |
+| Return periods (F1) | `scripts/periodos_retorno.py`, `scripts/figuras_retorno.py` | `data/processed/mswep_v3_return_periods_may_nov.nc` |
+| Declaratorias associated with cyclones | `scripts/declaratorias_6h.py` | `outputs/diagnostics/declaratorias_6h/` ([`docs/declaratorias.md`](docs/declaratorias.md)) |
+| Case studies | `scripts/casos.py` | `outputs/diagnostics/casos/<caso>.nc` |
 
-The conceptual separation is:
-
-```text
-Direct hazard = wind + precipitation inside R_direct
-```
-
-```text
-Indirect hazard = precipitation between R_direct and ROCLOUD
-```
-
-The exterior region does not contribute to the index.
-
-In the v0.2 verification studies the attribution radius was the W06 (PA21) radius where the wind falls to 2 m/s (`R_W06`, median 743 km over the verification pairs). From v0.2.1, `compute_itchi_snapshot_v02` uses ROCLOUD with R_W06 as a floor by quadrant, and R_W06 only as the end of the wind tail; the study setting is reproduced with `w06_attribution_mode="always"`.
-
-### `R34` versus `R_direct`
-
-The repository explicitly distinguishes between:
-
-| Variable | Meaning |
-|---|---|
-| `R34` | Observed 34-kt wind radius |
-| `R_direct` | Effective radius used to define the direct region |
-| `RMW` | Radius of maximum wind |
-| `ROCLOUD` | External cloud/precipitation attribution radius |
-
-Main rules:
-
-```text
-If R34 exists:
-    R_direct_q = R34_q
-
-If R34 is partial:
-    missing R34 quadrants are filled from available quadrants
-
-If R34 does not exist and Vmax < 34 kt:
-    R_direct_q = RMW
-
-If neither R34 nor RMW is available:
-    fallback_direct_radius_km is used, if explicitly configured
-```
-
-This avoids assigning artificial `R34` values to tropical depressions that physically do not reach 34-kt winds.
-
----
-
-## Precipitation treatment
-
-Precipitation enters ITCHI as the **6-h accumulation ending at the synoptic time** T, `P6 = (T − 6 h, T]` (MSWEP V3.16 6-h accumulations in the v0.2 studies). It is not accumulated over the event.
-
-v0.2 adds two rolling windows, used only to escalate the precipitation hazard:
-
-| Symbol | Window | Role |
-|---|---|---|
-| `P6` | (T − 6 h, T] | Intensity |
-| `R24` | (T − 24 h, T], includes P6 | Persistence |
-| `A72` | (T − 78 h, T − 6 h], excludes P6 | Antecedent wetness |
-
-The framework stays compatible with historical MSWEP, numerical forecasts, hindcasts, downscaled and bias-corrected products, provided the climatology is computed with the same accumulation windows.
-
-Critical rule:
-
-```text
-Each window is compared only with percentiles of the same duration.
-```
-
----
-
-## Temporal resolution
-
-The index is calculated at cyclone-associated synoptic times:
-
-```text
-00, 06, 12 and 18 UTC
-```
-
-This maintains temporal consistency among:
-
-- cyclone track;
-- intensity;
-- wind radii;
-- `R34`;
-- `RMW`;
-- `ROCLOUD`;
-- radial wind profile;
-- precipitation snapshot.
-
----
-
-## Precipitation normalization
-
-Precipitation hazard is computed with **local percentiles of each pixel** (MSWEP V3.16, May–November 2000–2025, computed on wet windows ≥ 1 mm, variable `p_wet_raw`), one climatology per duration (6, 24 and 72 h).
-
-v0.1 ramp (6 h):
-
-```text
-P < P90        -> H_P = 0
-P90 <= P < P95 -> H_P increases from 0 to 0.5
-P95 <= P < P99 -> H_P increases from 0.5 to 1
-P >= P99       -> H_P = 1
-```
-
-v0.2 matrix (base ramp with alert from P75, escalated at P95):
-
-| P6 | Base `H_P` | Escalated `H_P` | Level |
-|---|---|---|---|
-| < P75 | 0 | 0 | 0 |
-| P75–P90 | 0 → 0.25 | same | 1 |
-| P90–P95 | 0.25 → 0.5 | same | 2 |
-| P95–P99 | 0.5 → 1 | 0.8 → 1 | 3 → 4 with escalation |
-| ≥ P99 | 1 | 1 | 4 |
-
-```text
-H_P = (1 − f) · H_base(P6) + f · H_esc(P6),   f = f_R24 · f_A72
-f_R24: 0 at R24 = P90(24 h) → 1 at R24 = P95(24 h)
-f_A72: 0 at A72 = 0 mm      → 1 at A72 = P75(72 h)
-```
-
-The discrete rule behind it, calibrated with disaster declarations: **P6 in P95–P99 with R24 ≥ P95 and A72 ≥ P75 → maximum level.** P99 is the saturation threshold in both versions.
-
----
-
-## Wind hazard
-
-| Version | Inside `R_direct` | Outside `R_direct` |
-|---|---|---|
-| v0.1 | Modified Rankine profile (inner exponent 1, outer decay 0.5), `H_W = (V − 34)/(Vmax − 34)` | 0 |
-| v0.2 (`wind_model="w06_tail"`) | W06 calibrated to the observed R34, `H_W = h34 + (1 − h34)(V − 34)/(Vmax − 34)` | Tail `H_W = h34 (V − V_out)/(34 − V_out)`, zero at the attribution radius |
-
-`h34 = 0.2` by default, so the tail alone stays in the lowest SIAT-style class. In both versions the hazard inside `R_direct` is relative to the storm's own Vmax.
-
----
-
-## Index components
-
-| Component | Description |
-|---|---|
-| `H_P` | Normalized precipitation hazard |
-| `H_W` | Normalized wind hazard |
-| `H_Wdir`, `H_Wind` | v0.2: wind hazard in the direct and indirect regions |
-| `H_Pdir` | Direct precipitation inside `R_direct` |
-| `H_Pind` | Indirect precipitation between `R_direct` and `ROCLOUD` |
-| `H_dir` | Direct component |
-| `H_ind` | Indirect component |
-| `ITCHI` | Final integrated index |
-
----
-
-## Conceptual formula
-
-Direct component:
-
-```text
-H_dir = 1 - (1 - H_W)^alpha * (1 - H_Pdir)^beta
-```
-
-Indirect component:
-
-```text
-v0.1: H_ind = H_Pind
-v0.2: H_ind = 1 - (1 - H_Wind) * (1 - H_Pind)
-```
-
-Final index:
-
-```text
-ITCHI = 1 - (1 - H_dir)^lambda_direct * (1 - H_ind)^mu_indirect
-```
-
-Base version:
-
-```text
-alpha = beta = lambda_direct = mu_indirect = 1.0
-```
-
----
-
-## Computational workflow
-
-```text
-Cyclone track
-    center_lon, center_lat, vmax_kt, rmw_km, R34
-        ↓
-ROCLOUD by quadrant
-        ↓
-snapshot_inputs.py
-    table records + precipitation snapshot + climatology
-        ↓
-radii.py
-    resolution of R_direct_q and ROCLOUD_q
-        ↓
-geometry.py
-    radius_km, quadrant
-        ↓
-precipitation.py
-    H_P: v0.1 ramp or v0.2 matrix (P6, R24, A72 vs their percentiles)
-        ↓
-wind.py + parametric_radii.py
-    v0.1 Rankine V* inside R_direct, or v0.2 W06 with outer tail
-        ↓
-masks.py
-    M_direct, M_indirect, M_exterior
-        ↓
-components.py
-    H_Pdir, H_Pind, H_W, H_dir, H_ind
-        ↓
-index.py
-    ITCHI_g,h,t
-        ↓
-quality_control.py
-    physical and structural validation
-        ↓
-compiler.py + aggregation.py
-    snapshots, metadata, ITCHI_max, ITCHI_acc
-        ↓
-io.py
-    NetCDF/Zarr export and product reading
-```
-
----
+Inputs: IBTrACS v04r01 (`data/raw/tracks/`), ROCLOUD
+(`data/external/Rocloud/`, [`docs/rocloud_format.md`](docs/rocloud_format.md)),
+MSWEP V3 ([`docs/mswep_adapter.md`](docs/mswep_adapter.md)), INEGI
+municipalities `mun23gw` (`data/external/mun23gw/`). Paths in
+`configs/default.yaml`.
 
 ## Repository structure
 
 ```text
-itchi-core/
-├── README.md, CHANGELOG.md, environment.yml, pyproject.toml, .gitignore
-├── configs/default.yaml            # v0.1 defaults and v0.2 options
-├── docs/
-│   ├── methodology.md              # formulas (v0.1 and v0.2 extensions)
-│   ├── verification_v02.md         # v0.2 calibration, results and open decisions
-│   ├── declaratorias.md            # disaster-declaration processing
-│   ├── architecture.md, api.md, data_contracts.md, workflows.md
-│   ├── mswep_adapter.md, rocloud_format.md, real_case_validation.md
-│   └── development.md, dev_log.md
-├── examples/                       # synthetic and table-driven smoke tests
-├── notebooks/
-│   ├── 00–03 *.ipynb               # synthetic test, Willa, Cristóbal/Odile v0.1
-│   ├── declaratorias_6h_*.ipynb    # declaration exploration
-│   ├── first test/, second test/   # real-case iterations; second test/05–08 = v0.2
-│   └── README.md
-├── scripts/
-│   ├── mswep_v3_6h_accum.py        # MSWEP V3.16 6-h accumulations
-│   ├── percentiles_6h.py           # 6/24/72-h local percentiles
-│   ├── declaratorias_6h.py         # TC declarations vs 6/24/72-h rain
-│   ├── negativos_w06.py            # municipality–cyclone verification pairs
-│   └── percentiles.py, prueba_rapida_6h.py
-├── src/itchi/
-│   ├── precipitation.py            # ramps, v0.2 matrix, antecedent windows
-│   ├── wind.py, wind_profiles.py, parametric_radii.py, chavas_outer.py
-│   ├── components.py, index.py, masks.py, pipeline.py, compiler.py, aggregation.py
-│   ├── radii.py, rocloud.py, tracks.py, ibtracs.py, mswep.py, climatology.py
-│   ├── declaratorias_6h.py, itchi_size_helpers.py, plotting.py
-│   └── geometry.py, units.py, time_utils.py, io.py, quality_control.py, ...
-└── tests/                          # pytest; tests/test_v02.py covers v0.2
+configs/default.yaml        current scheme and paths (experiments: overlays in configs/experiments/)
+src/itchi/
+  pipeline.py               compute_itchi_snapshot: one synoptic time on a grid
+  precipitation.py          P6 x (R24, A72) matrix, antecedent windows
+  wind.py                   absolute Saffir-Simpson wind hazard
+  parametric_radii.py       W06/PA21 radii and wind with tail
+  wind_profiles.py          Willoughby et al. (2006) profile
+  radii.py, geometry.py, masks.py, components.py, index.py
+  climatology.py            percentile files
+  return_periods.py         GEV and POT by L-moments (F1)
+  cases.py, municipal.py    case studies and municipal aggregation
+  ibtracs.py, tracks.py, rocloud.py, mswep.py, precipitation_snapshots.py, units.py, time_utils.py
+  declaratorias_6h.py, plotting.py, io.py, quality_control.py, config.py, constants.py
+scripts/                    command-line workflows (table above)
+notebooks/v03/              v0.3 experiments, with figures and reading guide
+docs/                       methodology, plan v0.3, data formats; docs/historial/ for v0.1–v0.2.2
+examples/                   synthetic smoke test
+tests/                      pytest
 ```
 
-`data/` and `outputs/` keep only `.gitkeep`; data and derived products are never committed.
+## History
 
----
+The code, notebooks and configurations of v0.1, v0.2.0 and the v0.2.1
+experiments (Block 1, progress report) were retired at the start of v0.3 and
+are kept in the git tags `v0.2.0`, `v0.2.1` and `v0.2.2`; their documents
+are in [`docs/historial/`](docs/historial/README.md).
 
-## Expected inputs
+## Development
 
-Minimum inputs required to calculate ITCHI:
-
-1. Tropical-cyclone track data.
-2. Cyclone center by time: `center_lon`, `center_lat`.
-3. Intensity: `vmax_kt`.
-4. Radius of maximum wind: `rmw_km`, when available.
-5. Wind radii, especially `R34`.
-6. External `ROCLOUD` radii.
-7. Snapshot precipitation field.
-8. Local climatological percentiles: `Q90`, `Q95`, `Q99` (v0.1) or P75–P99 of 6, 24 and 72 h (v0.2).
-9. Normalized wind field `V*` or parameters to construct it (v0.2: Vmax, RMW, R34 and latitude for W06).
-10. For verification: TC-associated disaster declarations by municipality and municipal polygons.
-
-Detailed input contracts are available in [`docs/data_contracts.md`](docs/data_contracts.md).
-
----
-
-## Expected outputs
-
-| Output | Description |
-|---|---|
-| `ITCHI_g,h,t` | Index by grid cell and time |
-| `H_P` | Precipitation hazard |
-| `H_W` | Wind hazard |
-| `H_Pdir` | Direct precipitation component |
-| `H_Pind` | Indirect precipitation component |
-| `H_dir` | Direct component |
-| `H_ind` | Indirect component |
-| `M_direct` | Direct-region mask |
-| `M_indirect` | Indirect-region mask |
-| `M_exterior` | Exterior-region mask |
-| `ITCHI_max` | Event-level maximum |
-| `ITCHI_acc` | Bounded accumulation or persistence across event snapshots |
-| `H_Wdir`, `H_Wind` | v0.2: wind hazard in the direct and indirect regions |
-
-Compiled events may be exported as NetCDF or Zarr with spatial fields, event products and serialized metadata.
-
----
-
-## Current project status
-
-| Component | Status | Description |
-|---|---|---|
-| Base repository | Done | Repository, environment, configuration and installable package |
-| Core modules | Done | Precipitation, geometry, masks, components and index |
-| Radii and units | Done | Unit conversion, quadrants, `R_direct`, `ROCLOUD` |
-| Wind | Done | Simple radial profile and `V*` normalization |
-| Snapshot precipitation | Done | v0.1: valid-time snapshot selection; v0.2: 6-h accumulation ending at T, with R24 and A72 |
-| Climatology utilities | Done | Q90/Q95/Q99 computation and extraction utilities |
-| Integrated pipeline | Done | Snapshot-level calculation with optional quality control |
-| Aggregation | Done | `ITCHI_max` and `ITCHI_acc` |
-| Compiler | Done | Multi-snapshot event orchestration |
-| I/O | Done | `xarray.Dataset` conversion, reading and writing |
-| Tracks and ROCLOUD | Done | Tabular standardization and radius extraction |
-| Snapshot input builders | Done | Track + ROCLOUD + precipitation assembly |
-| Unit tests | Done | Module-level coverage with `pytest` |
-| Synthetic scripts | Done | Direct and table-driven smoke tests |
-| Product reader | Done | Independent compiled-event validation |
-| Notebooks | Done | Synthetic calculation and compiled-event inspection |
-| Data contracts | Done | Formal input/output documentation |
-| Workflow documentation | Done | Reproducible execution guide |
-| Real cyclone cases | Done | Willa 2018, Cristóbal 2020, Odile 2014 (notebooks) |
-| Gridded climatology | Done | MSWEP V3.16 6/24/72-h local percentiles (`scripts/percentiles_6h.py`) |
-| v0.2 precipitation matrix | Done | Escalation by R24 and A72, calibrated with declarations |
-| v0.2 entry point | Done (v0.2.1) | `compute_itchi_snapshot_v02`; keyword defaults = v0.2.0 (`configs/experiments/v021/v020.yaml`), current scheme in `configs/default.yaml` (v0.2.2); both tied by tests |
-| v0.2 wind tail | Done, under review | W06 with outer tail; cut at 17 kt proposed (D1) |
-| Impact validation | In progress | 381 929 municipality–cyclone pairs; cross-validation and association by storm name pending |
-
----
-
-## Installation
-
-### Requirements
-
-- Python 3.11 or higher
-- Conda or pip
-- Git
-
-### Option 1: Conda
-
-```bash
-git clone https://github.com/apereze/itchi-core.git
-cd itchi-core
-
-conda env create -f environment.yml
-conda activate itchi
-
-pip install -e .
-```
-
-### Option 2: pip/venv
-
-```bash
-git clone https://github.com/apereze/itchi-core.git
-cd itchi-core
-
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-pip install -e ".[dev]"
-```
-
-### Verify installation
-
-```bash
-python -c "import itchi; print('ITCHI installed successfully')"
-python -m pytest tests/
-pre-commit run --all-files
-```
-
----
-
-## Reproducible examples
-
-### Direct synthetic smoke test
-
-```bash
-python examples/smoke_test_synthetic.py
-```
-
-Export compiled event:
-
-```bash
-python examples/smoke_test_synthetic.py \
-  --output-path outputs/events/smoke_test_synthetic.nc
-```
-
-Diagnostic figure:
-
-```bash
-python examples/smoke_test_synthetic.py \
-  --plot \
-  --figure-path outputs/figures/smoke_test_synthetic.png
-```
-
-### Table-driven synthetic smoke test
-
-```bash
-python examples/smoke_test_from_tables.py
-```
-
-Export compiled event:
-
-```bash
-python examples/smoke_test_from_tables.py \
-  --output-path outputs/events/smoke_test_from_tables.nc
-```
-
-Validate exported event:
-
-```bash
-python examples/read_compiled_event.py \
-  --input-path outputs/events/smoke_test_from_tables.nc
-```
-
-### Synthetic notebook
-
-```bash
-jupyter lab notebooks/00_smoke_test_synthetic.ipynb
-```
-
-### Compiled-event inspection notebook
-
-```bash
-jupyter lab notebooks/01_read_compiled_event.ipynb
-```
-
-For the complete workflow sequence, see [`docs/workflows.md`](docs/workflows.md).
-
----
-
-### ITCHI v0.2 snapshot
-
-```python
-from itchi.precipitation import compute_antecedent_precipitation, compute_precipitation_matrix_hazard
-from itchi.pipeline import compute_itchi_snapshot_from_grid
-
-# p6: DataArray (time, lat, lon) of 6-h accumulations
-# q6, q24, q72: {"Q75": DataArray, "Q90": ..., "Q95": ..., "Q99": ...} on the same grid
-r24 = compute_antecedent_precipitation(p6, hours=24, exclude_current=False)
-a72 = compute_antecedent_precipitation(p6, hours=72, exclude_current=True)
-hp = compute_precipitation_matrix_hazard(p6, q6, {"R24": r24, "A72": a72}, {"R24": q24, "A72": q72})
-
-res = compute_itchi_snapshot_from_grid(
-    p6.values[i], None, None, None,
-    precipitation_hazard=hp.fillna(0.0).values[i],
-    lon=lon2d, lat=lat2d, center_lon=lon_c, center_lat=lat_c,
-    r34_by_quadrant=r34_nm, r34_unit="nm",
-    rocloud_by_quadrant=attribution_km, rocloud_unit="km",
-    vmax_kt=vmax, rmw_km=rmw, wind_model="w06_tail",
-)
-```
-
-Without `precipitation_hazard` and `wind_model`, the result is identical to v0.1. The full v0.2 workflow (scripts and notebooks 05–08) is in [`docs/verification_v02.md`](docs/verification_v02.md#reproduction).
-
----
-
-## Tests and quality control
-
-Run all tests:
-
-```bash
-python -m pytest tests/
-```
-
-Run pre-commit:
-
-```bash
-pre-commit run --all-files
-```
-
-Run specific module tests:
-
-```bash
-python -m pytest tests/test_pipeline.py
-python -m pytest tests/test_compiler.py
-python -m pytest tests/test_snapshot_inputs.py
-```
-
-Consistency rules verified by the test suite and quality-control utilities:
-
-- `ITCHI` remains in `[0, 1]`.
-- `H_P`, `H_W`, `H_dir`, `H_ind`, `H_Pdir` and `H_Pind` remain in `[0, 1]`.
-- `R_direct_q <= ROCLOUD_q`.
-- The exterior region does not contribute to the index.
-- Direct, indirect and exterior masks do not overlap.
-- Fields preserve dimensions and coordinates when `xarray` is used.
-- Geometric units are normalized to kilometers.
-
----
-
-## Data requirements
-
-The repository expects data in the following general formats.
-
-### 1. Tropical-cyclone tracks
-
-**Format:** IBTrACS, local best-track, CSV or Parquet.
-
-Minimum variables:
-
-- `storm_id`
-- `time`
-- `lat`
-- `lon`
-- `vmax_kt`
-- optional `pmin_hpa`
-- optional or conditional `rmw_km`
-
-### 2. Wind radii
-
-Expected variables:
-
-- `R34_NE`, `R34_SE`, `R34_SW`, `R34_NW`, or equivalent names.
-- Typical unit: nautical miles (`nm`).
-
-Internally, quadrant labels are normalized to:
-
-```text
-RNE, RSE, RSW, RNW
-```
-
-### 3. ROCLOUD radii
-
-Expected variables:
-
-- `ROCLOUD_RNE`, `ROCLOUD_RSE`, `ROCLOUD_RSW`, `ROCLOUD_RNW`, or equivalent names.
-- Expected unit: kilometers (`km`).
-
-### 4. Precipitation fields
-
-**Format:** NetCDF or Zarr.
-
-Specifications:
-
-- Target resolution: 0.1° × 0.1°, when using MSWEP-like products.
-- Type: 6-h accumulation ending at the synoptic time (v0.2: MSWEP V3.16 6-h).
-- Units: must match the climatology used to derive the percentiles.
-- Coverage: sufficient spatial domain around the cyclone center.
-
-Compatible sources may include:
-
-- historical MSWEP;
-- numerical forecasts;
-- hindcasts;
-- downscaled products;
-- bias-corrected products.
-
-### 5. Climatological percentiles
-
-Required variables:
-
-- `Q90`
-- `Q95`
-- `Q99`
-
-They should be computed by spatial cell and by a comparable temporal window. v0.2 uses P75, P90, P95, P99 and P99.9 of 6, 24 and 72 h (`data/processed/mswep_v3_{6,24,72}h_percentiles_may_nov.nc`, variable `p_wet_raw`).
-
-### 6. Disaster declarations (verification only)
-
-CENAPRED declarations of emergency, disaster and climatological contingency filtered to tropical cyclones, and INEGI municipal polygons. See [`docs/declaratorias.md`](docs/declaratorias.md).
-
-For detailed requirements, see [`docs/data_contracts.md`](docs/data_contracts.md).
-
----
-
-## Documentation
-
-Main documentation files:
-
-- [`docs/methodology.md`](docs/methodology.md): formulas of v0.1 and the v0.2 extensions.
-- [`docs/verification_v02.md`](docs/verification_v02.md): v0.2 calibration, verification results, case studies and open decisions for v0.3.
-- [`docs/declaratorias.md`](docs/declaratorias.md): processing of disaster declarations.
-- [`docs/architecture.md`](docs/architecture.md): project architecture and computational design.
-- [`docs/data_contracts.md`](docs/data_contracts.md): expected input/output contracts.
-- [`docs/workflows.md`](docs/workflows.md): reproducible execution workflows.
-- [`examples/README.md`](examples/README.md): example scripts and usage.
-- [`notebooks/README.md`](notebooks/README.md): notebook descriptions.
-
----
-
-## Contributing
-
-Contributions are welcome.
-
-### Development setup
-
-```bash
-git clone https://github.com/YOUR_USERNAME/itchi-core.git
-cd itchi-core
-
-conda env create -f environment.yml
-conda activate itchi
-pip install -e .
-pre-commit install
-```
-
-### Code conventions
-
-- Formatting: `black`, maximum line length of 88 characters.
-- Linting: `ruff`.
-- Type hints are recommended for public functions.
-- NumPy-style docstrings are preferred.
-- New functionality should include tests.
-- Do not commit heavy data or derived products.
-
-### Commit style
-
-Suggested format:
-
-```text
-type: brief description
-```
-
-Recommended types:
-
-- `feat`
-- `fix`
-- `docs`
-- `test`
-- `refactor`
-- `style`
-- `chore`
-
-Example:
-
-```text
-feat: add event-level ITCHI compiler
-```
-
----
+Guide in [`docs/development.md`](docs/development.md). Scientific functions are
+NumPy-based and have tests in `tests/`; each v0.3 experiment gets a notebook
+in `notebooks/v03/` and its criteria are written before seeing the results.
 
 ## Authorship
 
@@ -838,39 +142,15 @@ feat: add event-level ITCHI compiler
 Universidad Nacional Autónoma de México (UNAM)
 Instituto de Ciencias de la Atmósfera y Cambio Climático (ICACC)
 
----
-
 ## License
 
 License to be defined.
 
-For guidance on scientific software licenses, see [choosealicense.com](https://choosealicense.com/).
-
----
-
 ## References
-
-### Key resources
-
-- **IBTrACS**: International Best Track Archive for Climate Stewardship.
-- **MSWEP**: Multi-Source Weighted-Ensemble Precipitation.
-- **ROCLOUD**: Database for the outer sizes of tropical cyclones over the Middle Americas.
-
-### Related documentation
-
-- [Project architecture](docs/architecture.md)
-- [Data contracts](docs/data_contracts.md)
-- [Reproducible workflows](docs/workflows.md)
-- [Examples](examples/)
-- [Synthetic smoke test notebook](notebooks/00_smoke_test_synthetic.ipynb)
-- [Compiled-event inspection notebook](notebooks/01_read_compiled_event.ipynb)
-
-### Scientific references
 
 - Pérez-Estrada & Dominguez (2025): A database for the outer sizes of tropical cyclones over the Middle Americas.
 - Pérez-Alarcón et al. (2021): Comparative climatology of outer tropical cyclone size using radial wind profiles.
 - Knapp et al. (2010): The International Best Track Archive for Climate Stewardship (IBTrACS).
 - Beck et al. (2019): MSWEP V2 global 3-hourly 0.1° precipitation.
 - Willoughby, Darling & Rahn (2006): Parametric representation of the primary hurricane vortex. Part II. *Mon. Wea. Rev.*, 134, 1102–1120, https://doi.org/10.1175/MWR3106.1.
-- Jolliffe & Stephenson (2012): *Forecast Verification: A Practitioner's Guide in Atmospheric Science*, 2nd ed., Wiley.
-- Ferro & Stephenson (2011): Extremal Dependence Indices. *Weather and Forecasting*, 26, 699–713, https://doi.org/10.1175/WAF-D-10-05030.1.
+- NHC: Saffir-Simpson Hurricane Wind Scale, https://www.nhc.noaa.gov/aboutsshws.php.

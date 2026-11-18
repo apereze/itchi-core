@@ -4,7 +4,7 @@ Final ITCHI index calculation.
 This module implements the final bounded integration of the direct and
 indirect hazard components.
 
-For ITCHI v0.1, the final index is defined as:
+The final index is defined as:
 
     ITCHI = 1 - (1 - H_dir)^lambda * (1 - H_ind)^mu
 
@@ -14,7 +14,7 @@ where:
 - H_ind is the indirect hazard component.
 - lambda and mu control the sensitivity to direct and indirect hazards.
 
-For the baseline v0.1 configuration:
+For the baseline configuration (configs/default.yaml):
 
     lambda = 1
     mu = 1

@@ -1,8 +1,7 @@
 """
 Constants used across the ITCHI core package.
 
-ITCHI v0.1 is designed as a physical tropical cyclone hazard index
-bounded between 0 and 1.
+ITCHI is a tropical cyclone hazard index bounded between 0 and 1.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from __future__ import annotations
 # ============================================================
 
 PROJECT_NAME: str = "itchi-core"
-ITCHI_VERSION: str = "0.2.2"
+ITCHI_VERSION: str = "0.3.0"
 
 
 # ============================================================
@@ -28,21 +27,6 @@ ITCHI_MAX_VALUE: float = 1.0
 # ============================================================
 
 SYNOPTIC_HOURS_UTC: tuple[int, int, int, int] = (0, 6, 12, 18)
-
-
-# ============================================================
-# Precipitation percentiles
-# ============================================================
-
-PRECIP_PERCENTILE_LOW: int = 90
-PRECIP_PERCENTILE_HIGH: int = 95
-PRECIP_PERCENTILE_MAXIMUM: int = 99
-
-PRECIP_PERCENTILES: tuple[int, int, int] = (
-    PRECIP_PERCENTILE_LOW,
-    PRECIP_PERCENTILE_HIGH,
-    PRECIP_PERCENTILE_MAXIMUM,
-)
 
 
 # ============================================================
@@ -69,8 +53,7 @@ SAFFIR_SIMPSON_KT: dict[str, float] = {
     "H5": 137.0,
 }
 
-# Absolute wind hazard homologated with Saffir-Simpson, default since
-# v0.2.2 (agreed after the v0.2.1 progress report). (wind kt, H_W) nodes,
+# Absolute wind hazard homologated with Saffir-Simpson (since v0.2.2). (wind kt, H_W) nodes,
 # linear between nodes, constant above the last one. The SIAT-style classes
 # (steps of 0.2) then mean:
 #   class 1 (0-0.2]   tail below 34 kt (from the tail-end wind, 12 m/s)
@@ -90,16 +73,9 @@ SAFFIR_SIMPSON_HAZARD_NODES: tuple[tuple[float, float], ...] = (
     (137.0, 1.0),
 )
 
-# v0.2.1 progress-report proposal, kept to reproduce it
-# (configs/experiments/v021/ss.yaml and p95_ss.yaml):
-# tail -> 1, TS -> 2, H1-H2 -> 3, H3 -> 4, H4-H5 -> 5.
-SAFFIR_SIMPSON_HAZARD_NODES_V021: tuple[tuple[float, float], ...] = (
-    (34.0, 0.2),
-    (64.0, 0.4),
-    (96.0, 0.6),
-    (113.0, 0.8),
-    (137.0, 1.0),
-)
+# End of the wind tail below 34 kt (m s-1, 1-min sustained wind of the W06
+# profile): the tail never extends beyond R_W06_q nor below this speed.
+TAIL_END_WIND_MS: float = 12.0
 
 
 # ============================================================

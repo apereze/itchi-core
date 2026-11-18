@@ -246,7 +246,7 @@ def extract_standard_percentiles(
 
 
 # ============================================================
-# ITCHI v0.2: multi-duration MSWEP percentile files
+# Multi-duration MSWEP percentile files
 # ============================================================
 
 
@@ -258,7 +258,7 @@ def quantile_dataarray_to_dict(
     Split a percentile DataArray with a quantile dimension into named fields.
 
     Quantile levels 0.75, 0.9, 0.999 become "Q75", "Q90", "Q99.9", the names
-    used by the v0.2 ramps and precipitation matrix.
+    used by the precipitation matrix.
 
     Parameters
     ----------
@@ -304,7 +304,7 @@ def load_percentile_climatology(
         NetCDF file.
     variable : str, default="p_wet_raw"
         Percentile variable (configs/default.yaml,
-        precipitation.matrix_v02.climatology_variable).
+        precipitation.climatology_variable).
     template : xarray.DataArray or None, default=None
         Precipitation field; if given, the percentiles are reindexed to its
         lat/lon coordinates (nearest within tolerance_deg).

@@ -1,8 +1,7 @@
 """
 Spatial masks for ITCHI.
 
-This module defines the direct, indirect and exterior regions used by
-ITCHI v0.1.
+This module defines the direct, indirect and exterior regions of ITCHI.
 
 Definitions
 -----------

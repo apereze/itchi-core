@@ -1,604 +1,271 @@
 """
-Tests for the high-level ITCHI snapshot pipeline.
+Tests for pipeline.compute_itchi_snapshot (synthetic fields; no MSWEP or
+IBTrACS) and its configuration (configs/default.yaml).
 """
 
 from __future__ import annotations
+
+import inspect
 
 import numpy as np
 import pytest
 import xarray as xr
 
-from itchi.pipeline import compute_itchi_snapshot, compute_itchi_snapshot_from_grid
+from itchi.climatology import quantile_dataarray_to_dict
+from itchi.config import KNOT_TO_MS, itchi_settings_from_config, load_default_config, merge_config
+from itchi.constants import SAFFIR_SIMPSON_HAZARD_NODES, TAIL_END_WIND_MS
+from itchi.parametric_radii import (
+    R_W06_DEFAULTS,
+    compute_parametric_radii,
+    compute_w06_reference_radii,
+    compute_w06_wind_hazard_with_tail,
+)
+from itchi.pipeline import compute_itchi_snapshot
+from itchi.precipitation import PRECIP_MATRIX, compute_precipitation_matrix_hazard
+from itchi.radii import resolve_attribution_radius_with_w06
+from itchi.wind_profiles import KNOT_TO_MS as KNOT_TO_MS_PROFILES
+
+QUADS = ("RNE", "RSE", "RSW", "RNW")
+Q6 = {"Q75": 8.0, "Q90": 18.0, "Q95": 28.0}
+Q24 = {"Q90": 40.0, "Q95": 55.0}
+Q72 = {"Q75": 30.0, "Q90": 60.0, "Q95": 80.0}
+KT_12MS = TAIL_END_WIND_MS / KNOT_TO_MS_PROFILES
+
+CASE = dict(
+    center_lon=-95.0, center_lat=20.0, vmax_kt=95.0, rmw_km=30.0,
+    r34_by_quadrant={"RNE": 120, "RSE": 100, "RSW": 60, "RNW": 80}, r34_unit="nm",
+)
 
 
-def test_compute_itchi_snapshot_returns_expected_keys() -> None:
-    """
-    Test that the snapshot pipeline returns all expected outputs.
-    """
-    precipitation = np.array([5.0, 15.0, 25.0, 25.0, 30.0, 40.0])
-    radius_km = np.array([0.0, 25.0, 50.0, 75.0, 100.0, 125.0])
-    wind_hazard = np.array([1.0, 0.5, 0.3, 0.2, 0.0, 0.0])
+def _grid() -> tuple[np.ndarray, np.ndarray]:
+    # +-15 degrees around the center: contains R_W06 in every quadrant
+    return np.meshgrid(np.arange(-110.0, -80.0, 0.2), np.arange(5.0, 35.0, 0.2))
 
-    result = compute_itchi_snapshot(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        radius_km=radius_km,
-        r34_km=50.0,
-        rocloud_km=100.0,
-        wind_hazard_normalized=wind_hazard,
+
+def _fields(shape: tuple[int, ...], seed: int = 0) -> tuple[np.ndarray, ...]:
+    rng = np.random.default_rng(seed)
+    p6 = rng.gamma(0.7, 12.0, shape)
+    r24 = p6 + rng.gamma(0.7, 25.0, shape)
+    a72 = rng.gamma(0.8, 30.0, shape)
+    return p6, r24, a72
+
+
+def _snap(p6, r24, a72, lon, lat, **kw) -> dict:
+    return compute_itchi_snapshot(
+        p6, r24, a72, quantiles_6h=Q6, quantiles_24h=Q24, quantiles_72h=Q72,
+        lon=lon, lat=lat, **{**CASE, **kw},
     )
 
-    expected_keys = {
-        "M_direct",
-        "M_indirect",
-        "M_exterior",
-        "H_P",
-        "H_Pdir",
-        "H_Pind",
-        "H_W",
-        "H_dir",
-        "H_ind",
-        "ITCHI",
+
+def _r_w06() -> float:
+    return compute_w06_reference_radii(CASE["vmax_kt"], CASE["center_lat"])["r_outer_km"]
+
+
+# ------------------------------------------------------------------ radio de atribución
+
+W06 = {q: 700.0 for q in QUADS}
+DIRECT = {"RNE": 200.0, "RSE": 180.0, "RSW": 120.0, "RNW": 150.0}
+
+
+def test_attribution_floor_by_quadrant() -> None:
+    out = resolve_attribution_radius_with_w06(
+        {"RNE": 800.0, "RSE": None, "RSW": 300.0, "RNW": 0.0}, W06, DIRECT
+    )
+    assert out.radii == {"RNE": 800.0, "RSE": 700.0, "RSW": 700.0, "RNW": 700.0}
+    assert out.status == {
+        "RNE": "rocloud", "RSE": "w06_missing_rocloud",
+        "RSW": "w06_floor", "RNW": "w06_missing_rocloud",   # 0 = no detection
     }
-
-    assert set(result) == expected_keys
-
-
-def test_compute_itchi_snapshot_expected_numpy_values() -> None:
-    """
-    Test the complete ITCHI calculation with synthetic NumPy inputs.
-    """
-    precipitation = np.array([5.0, 15.0, 25.0, 25.0, 30.0, 40.0])
-    radius_km = np.array([0.0, 25.0, 50.0, 75.0, 100.0, 125.0])
-    wind_hazard = np.array([1.0, 0.5, 0.3, 0.2, 0.0, 0.0])
-
-    result = compute_itchi_snapshot(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        radius_km=radius_km,
-        r34_km=50.0,
-        rocloud_km=100.0,
-        wind_hazard_normalized=wind_hazard,
-    )
-
-    expected_hp = np.array([0.0, 0.25, 0.75, 0.75, 1.0, 1.0])
-    expected_h_pdir = np.array([0.0, 0.25, 0.75, 0.0, 0.0, 0.0])
-    expected_h_pind = np.array([0.0, 0.0, 0.0, 0.75, 1.0, 0.0])
-    expected_h_w = np.array([1.0, 0.5, 0.3, 0.0, 0.0, 0.0])
-    expected_h_dir = np.array([1.0, 0.625, 0.825, 0.0, 0.0, 0.0])
-    expected_h_ind = np.array([0.0, 0.0, 0.0, 0.75, 1.0, 0.0])
-    expected_itchi = np.array([1.0, 0.625, 0.825, 0.75, 1.0, 0.0])
-
-    np.testing.assert_allclose(result["H_P"], expected_hp)
-    np.testing.assert_allclose(result["H_Pdir"], expected_h_pdir)
-    np.testing.assert_allclose(result["H_Pind"], expected_h_pind)
-    np.testing.assert_allclose(result["H_W"], expected_h_w)
-    np.testing.assert_allclose(result["H_dir"], expected_h_dir)
-    np.testing.assert_allclose(result["H_ind"], expected_h_ind)
-    np.testing.assert_allclose(result["ITCHI"], expected_itchi)
+    assert out.clipped_to_direct == () and out.mode == "floor"
 
 
-def test_compute_itchi_snapshot_is_bounded() -> None:
-    """
-    Test that the final ITCHI output remains within [0, 1].
-    """
-    precipitation = np.array([-999.0, 15.0, 1000.0])
-    radius_km = np.array([0.0, 75.0, 125.0])
-    wind_hazard = np.array([-1.0, 0.5, 2.0])
-
-    result = compute_itchi_snapshot(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        radius_km=radius_km,
-        r34_km=50.0,
-        rocloud_km=100.0,
-        wind_hazard_normalized=wind_hazard,
-    )
-
-    itchi = result["ITCHI"]
-
-    assert np.nanmin(itchi) >= 0.0
-    assert np.nanmax(itchi) <= 1.0
-
-
-def test_compute_itchi_snapshot_preserves_xarray_dimensions() -> None:
-    """
-    Test that xarray inputs preserve dimensions and coordinates.
-    """
-    coords = {
-        "lat": [15.0, 16.0],
-        "lon": [-100.0, -99.0],
-    }
-
-    precipitation = xr.DataArray(
-        data=[[5.0, 15.0], [25.0, 40.0]],
-        dims=("lat", "lon"),
-        coords=coords,
-        name="precipitation",
-    )
-
-    radius_km = xr.DataArray(
-        data=[[10.0, 40.0], [80.0, 130.0]],
-        dims=("lat", "lon"),
-        coords=coords,
-        name="radius_km",
-    )
-
-    wind_hazard = xr.DataArray(
-        data=[[1.0, 0.5], [0.3, 0.0]],
-        dims=("lat", "lon"),
-        coords=coords,
-        name="V_star",
-    )
-
-    result = compute_itchi_snapshot(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        radius_km=radius_km,
-        r34_km=50.0,
-        rocloud_km=100.0,
-        wind_hazard_normalized=wind_hazard,
-    )
-
-    for value in result.values():
-        assert isinstance(value, xr.DataArray)
-        assert value.dims == precipitation.dims
-        assert value.shape == precipitation.shape
-
-    assert float(result["ITCHI"].min()) >= 0.0
-    assert float(result["ITCHI"].max()) <= 1.0
-
-
-def test_compute_itchi_snapshot_from_grid_returns_geometry_fields() -> None:
-    """
-    Test that the grid-based pipeline returns geometry and ITCHI fields.
-    """
-    precipitation = np.array([5.0, 15.0, 25.0, 25.0, 30.0, 40.0])
-    lon = np.array([0.0, 0.2, 0.5, 0.9, 1.2, 1.5])
-    lat = np.zeros_like(lon)
-    wind_hazard = np.array([1.0, 0.5, 0.3, 0.2, 0.0, 0.0])
-
-    result = compute_itchi_snapshot_from_grid(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        lon=lon,
-        lat=lat,
-        center_lon=0.0,
-        center_lat=0.0,
-        r34_by_quadrant={
-            "NE": 40.0,
-            "SE": 40.0,
-            "SW": 40.0,
-            "NW": 40.0,
-        },
-        r34_unit="nm",
-        rocloud_by_quadrant={
-            "NE": 130.0,
-            "SE": 130.0,
-            "SW": 130.0,
-            "NW": 130.0,
-        },
-        rocloud_unit="km",
-        wind_hazard_normalized=wind_hazard,
-    )
-
-    expected_keys = {
-        "radius_km",
-        "quadrant",
-        "R_direct_q",
-        "ROCLOUD_q",
-        "R_direct_source",
-        "R_direct_filled_quadrants",
-        "R_direct_used_fallback",
-        "ROCLOUD_source",
-        "ROCLOUD_filled_quadrants",
-        "wind_hazard_source",
-        "M_direct",
-        "M_indirect",
-        "M_exterior",
-        "H_P",
-        "H_Pdir",
-        "H_Pind",
-        "H_W",
-        "H_dir",
-        "H_ind",
-        "ITCHI",
-    }
-
-    assert set(result) == expected_keys
-
-
-def test_compute_itchi_snapshot_from_grid_expected_numpy_values() -> None:
-    """
-    Test grid-based ITCHI calculation with synthetic NumPy inputs.
-    """
-    precipitation = np.array([5.0, 15.0, 25.0, 25.0, 30.0, 40.0])
-    lon = np.array([0.0, 0.2, 0.5, 0.9, 1.2, 1.5])
-    lat = np.zeros_like(lon)
-    wind_hazard = np.array([1.0, 0.5, 0.3, 0.2, 0.0, 0.0])
-
-    result = compute_itchi_snapshot_from_grid(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        lon=lon,
-        lat=lat,
-        center_lon=0.0,
-        center_lat=0.0,
-        r34_by_quadrant={
-            "RNE": 40.0,
-            "RSE": 40.0,
-            "RSW": 40.0,
-            "RNW": 40.0,
-        },
-        r34_unit="nm",
-        rocloud_by_quadrant={
-            "RNE": 130.0,
-            "RSE": 130.0,
-            "RSW": 130.0,
-            "RNW": 130.0,
-        },
-        rocloud_unit="km",
-        wind_hazard_normalized=wind_hazard,
-    )
-
-    expected_h_p = np.array([0.0, 0.25, 0.75, 0.75, 1.0, 1.0])
-    expected_h_pdir = np.array([0.0, 0.25, 0.75, 0.0, 0.0, 0.0])
-    expected_h_pind = np.array([0.0, 0.0, 0.0, 0.75, 0.0, 0.0])
-    expected_h_w = np.array([1.0, 0.5, 0.3, 0.0, 0.0, 0.0])
-    expected_h_dir = np.array([1.0, 0.625, 0.825, 0.0, 0.0, 0.0])
-    expected_h_ind = np.array([0.0, 0.0, 0.0, 0.75, 0.0, 0.0])
-    expected_itchi = np.array([1.0, 0.625, 0.825, 0.75, 0.0, 0.0])
-
-    np.testing.assert_allclose(result["H_P"], expected_h_p)
-    np.testing.assert_allclose(result["H_Pdir"], expected_h_pdir)
-    np.testing.assert_allclose(result["H_Pind"], expected_h_pind)
-    np.testing.assert_allclose(result["H_W"], expected_h_w)
-    np.testing.assert_allclose(result["H_dir"], expected_h_dir)
-    np.testing.assert_allclose(result["H_ind"], expected_h_ind)
-    np.testing.assert_allclose(result["ITCHI"], expected_itchi)
-
-
-def test_compute_itchi_snapshot_from_grid_preserves_xarray_dimensions() -> None:
-    """
-    Test that the grid-based pipeline preserves xarray dimensions.
-    """
-    coords = {
-        "lat": [0.0, 0.5],
-        "lon": [0.0, 0.5],
-    }
-
-    precipitation = xr.DataArray(
-        data=[[5.0, 15.0], [25.0, 40.0]],
-        dims=("lat", "lon"),
-        coords=coords,
-        name="precipitation",
-    )
-
-    lon = xr.DataArray(
-        data=[[0.0, 0.5], [0.0, 0.5]],
-        dims=("lat", "lon"),
-        coords=coords,
-        name="lon",
-    )
-
-    lat = xr.DataArray(
-        data=[[0.0, 0.0], [0.5, 0.5]],
-        dims=("lat", "lon"),
-        coords=coords,
-        name="lat",
-    )
-
-    wind_hazard = xr.DataArray(
-        data=[[1.0, 0.5], [0.3, 0.0]],
-        dims=("lat", "lon"),
-        coords=coords,
-        name="V_star",
-    )
-
-    result = compute_itchi_snapshot_from_grid(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        lon=lon,
-        lat=lat,
-        center_lon=0.0,
-        center_lat=0.0,
-        r34_by_quadrant={
-            "RNE": 40.0,
-            "RSE": 40.0,
-            "RSW": 40.0,
-            "RNW": 40.0,
-        },
-        r34_unit="nm",
-        rocloud_by_quadrant={
-            "RNE": 130.0,
-            "RSE": 130.0,
-            "RSW": 130.0,
-            "RNW": 130.0,
-        },
-        rocloud_unit="km",
-        wind_hazard_normalized=wind_hazard,
-    )
-
-    spatial_fields = [
-        "radius_km",
-        "quadrant",
-        "R_direct_q",
-        "ROCLOUD_q",
-        "M_direct",
-        "M_indirect",
-        "M_exterior",
-        "H_P",
-        "H_Pdir",
-        "H_Pind",
-        "H_W",
-        "H_dir",
-        "H_ind",
-        "ITCHI",
-    ]
-
-    for field in spatial_fields:
-        assert isinstance(result[field], xr.DataArray)
-        assert result[field].dims == precipitation.dims
-        assert result[field].shape == precipitation.shape
-
-    assert isinstance(result["R_direct_source"], str)
-    assert isinstance(result["R_direct_filled_quadrants"], tuple)
-    assert isinstance(result["R_direct_used_fallback"], bool)
-    assert isinstance(result["ROCLOUD_source"], str)
-    assert isinstance(result["ROCLOUD_filled_quadrants"], tuple)
-    assert isinstance(result["wind_hazard_source"], str)
-
-    assert float(result["ITCHI"].min()) >= 0.0
-    assert float(result["ITCHI"].max()) <= 1.0
-
-
-def test_compute_itchi_snapshot_runs_quality_control() -> None:
-    """
-    Test that lower-level snapshot pipeline can run quality control.
-    """
-    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
-    radius_km = np.array([0.0, 25.0, 75.0, 150.0])
-    wind_hazard = np.array([1.0, 0.5, 0.0, 0.0])
-
-    result = compute_itchi_snapshot(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        radius_km=radius_km,
-        r34_km=50.0,
-        rocloud_km=100.0,
-        wind_hazard_normalized=wind_hazard,
-        run_quality_control=True,
-    )
-
-    assert "ITCHI" in result
-    assert np.nanmin(result["ITCHI"]) >= 0.0
-    assert np.nanmax(result["ITCHI"]) <= 1.0
-
-
-def test_compute_itchi_snapshot_from_grid_runs_quality_control() -> None:
-    """
-    Test that grid-based snapshot pipeline can run quality control.
-    """
-    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
-    lon = np.array([0.0, 0.2, 0.9, 1.5])
-    lat = np.zeros_like(lon)
-    wind_hazard = np.array([1.0, 0.5, 0.0, 0.0])
-
-    result = compute_itchi_snapshot_from_grid(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        lon=lon,
-        lat=lat,
-        center_lon=0.0,
-        center_lat=0.0,
-        r34_by_quadrant={
-            "RNE": 40.0,
-            "RSE": 40.0,
-            "RSW": 40.0,
-            "RNW": 40.0,
-        },
-        r34_unit="nm",
-        rocloud_by_quadrant={
-            "RNE": 130.0,
-            "RSE": 130.0,
-            "RSW": 130.0,
-            "RNW": 130.0,
-        },
-        rocloud_unit="km",
-        wind_hazard_normalized=wind_hazard,
-        run_quality_control=True,
-    )
-
-    assert "ITCHI" in result
-    assert "R_direct_q" in result
-    assert "ROCLOUD_q" in result
-    assert np.nanmin(result["ITCHI"]) >= 0.0
-    assert np.nanmax(result["ITCHI"]) <= 1.0
-
-
-def test_compute_itchi_snapshot_from_grid_fills_partial_r34() -> None:
-    """
-    Test that missing R34 quadrants are filled from available quadrants.
-    """
-    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
-    lon = np.array([0.0, 0.2, 0.9, 1.5])
-    lat = np.zeros_like(lon)
-    wind_hazard = np.array([1.0, 0.5, 0.0, 0.0])
-
-    result = compute_itchi_snapshot_from_grid(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        lon=lon,
-        lat=lat,
-        center_lon=0.0,
-        center_lat=0.0,
-        r34_by_quadrant={
-            "RNE": 40.0,
-            "RSE": 50.0,
-            "RSW": np.nan,
-            "RNW": 60.0,
-        },
-        r34_unit="nm",
-        rocloud_by_quadrant={
-            "RNE": 130.0,
-            "RSE": 130.0,
-            "RSW": 130.0,
-            "RNW": 130.0,
-        },
-        rocloud_unit="km",
-        wind_hazard_normalized=wind_hazard,
-        run_quality_control=True,
-    )
-
-    assert result["R_direct_source"] == "filled_missing_with_mean_available"
-    assert result["R_direct_filled_quadrants"] == ("RSW",)
-    assert result["R_direct_used_fallback"] is False
-    assert "ITCHI" in result
-
-
-def test_compute_itchi_snapshot_from_grid_uses_rmw_for_tropical_depression() -> None:
-    """
-    Test that RMW is used as direct radius when no R34 exists and Vmax < 34 kt.
-    """
-    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
-    lon = np.array([0.0, 0.1, 0.3, 1.5])
-    lat = np.zeros_like(lon)
-    wind_hazard = np.array([1.0, 0.5, 0.2, 0.0])
-
-    result = compute_itchi_snapshot_from_grid(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        lon=lon,
-        lat=lat,
-        center_lon=0.0,
-        center_lat=0.0,
-        r34_by_quadrant={
-            "RNE": np.nan,
-            "RSE": np.nan,
-            "RSW": np.nan,
-            "RNW": np.nan,
-        },
-        r34_unit="nm",
-        rocloud_by_quadrant={
-            "RNE": 130.0,
-            "RSE": 130.0,
-            "RSW": 130.0,
-            "RNW": 130.0,
-        },
-        rocloud_unit="km",
-        vmax_kt=30.0,
-        rmw_km=25.0,
-        wind_hazard_normalized=wind_hazard,
-        run_quality_control=True,
-    )
-
-    assert result["R_direct_source"] == "RMW_fallback_for_tropical_depression"
-    assert result["R_direct_used_fallback"] is True
-    assert result["R_direct_filled_quadrants"] == ("RNE", "RSE", "RSW", "RNW")
-    assert "ITCHI" in result
-
-
-def test_compute_itchi_snapshot_from_grid_computes_wind_from_profile() -> None:
-    """
-    Test that wind hazard can be computed internally from Vmax and RMW.
-    """
-    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
-    lon = np.array([0.0, 0.1, 0.3, 1.5])
-    lat = np.zeros_like(lon)
-
-    result = compute_itchi_snapshot_from_grid(
-        precipitation=precipitation,
-        q90=10.0,
-        q95=20.0,
-        q99=30.0,
-        lon=lon,
-        lat=lat,
-        center_lon=0.0,
-        center_lat=0.0,
-        r34_by_quadrant={
-            "RNE": 40.0,
-            "RSE": 40.0,
-            "RSW": 40.0,
-            "RNW": 40.0,
-        },
-        r34_unit="nm",
-        rocloud_by_quadrant={
-            "RNE": 130.0,
-            "RSE": 130.0,
-            "RSW": 130.0,
-            "RNW": 130.0,
-        },
-        rocloud_unit="km",
-        vmax_kt=80.0,
-        rmw_km=20.0,
-        wind_hazard_normalized=None,
-        run_quality_control=True,
-    )
-
-    assert result["wind_hazard_source"] == "radial_profile"
-    assert "H_W" in result
-    assert "ITCHI" in result
-    assert np.nanmin(result["H_W"]) >= 0.0
-    assert np.nanmax(result["H_W"]) <= 1.0
-    assert np.nanmin(result["ITCHI"]) >= 0.0
-    assert np.nanmax(result["ITCHI"]) <= 1.0
-
-
-def test_compute_itchi_snapshot_from_grid_requires_wind_inputs() -> None:
-    """
-    Test that wind inputs are required when wind_hazard_normalized is missing.
-    """
-    precipitation = np.array([5.0, 15.0, 25.0, 40.0])
-    lon = np.array([0.0, 0.1, 0.3, 1.5])
-    lat = np.zeros_like(lon)
-
+def test_attribution_other_modes() -> None:
+    roc = {"RNE": 800.0, "RSE": None, "RSW": 300.0, "RNW": 500.0}
+    fallback = resolve_attribution_radius_with_w06(roc, W06, mode="fallback")
+    assert fallback.radii == {"RNE": 800.0, "RSE": 700.0, "RSW": 300.0, "RNW": 500.0}
+    always = resolve_attribution_radius_with_w06(roc, W06, mode="always")
+    assert set(always.radii.values()) == {700.0}
+    never = resolve_attribution_radius_with_w06(roc, W06, mode="never")
+    assert never.radii["RSE"] == pytest.approx((800.0 + 300.0 + 500.0) / 3.0)
+    assert never.status["RSE"] == "rocloud_filled"
     with pytest.raises(ValueError):
-        compute_itchi_snapshot_from_grid(
-            precipitation=precipitation,
-            q90=10.0,
-            q95=20.0,
-            q99=30.0,
-            lon=lon,
-            lat=lat,
-            center_lon=0.0,
-            center_lat=0.0,
-            r34_by_quadrant={
-                "RNE": 40.0,
-                "RSE": 40.0,
-                "RSW": 40.0,
-                "RNW": 40.0,
-            },
-            r34_unit="nm",
-            rocloud_by_quadrant={
-                "RNE": 130.0,
-                "RSE": 130.0,
-                "RSW": 130.0,
-                "RNW": 130.0,
-            },
-            rocloud_unit="km",
-            wind_hazard_normalized=None,
-            vmax_kt=None,
-            rmw_km=None,
-        )
+        resolve_attribution_radius_with_w06(None, W06, mode="never")
+    with pytest.raises(ValueError):
+        resolve_attribution_radius_with_w06(roc, W06, mode="unknown")
+    with pytest.raises(ValueError):
+        resolve_attribution_radius_with_w06(roc, {**W06, "RNE": np.nan})
+
+
+def test_attribution_never_below_direct() -> None:
+    out = resolve_attribution_radius_with_w06(None, {q: 100.0 for q in QUADS}, DIRECT)
+    assert out.radii == DIRECT
+    assert set(out.clipped_to_direct) == set(QUADS)
+
+
+# ------------------------------------------------------------------ R_W06 y cola de viento
+
+
+def test_r_w06_reference_is_pa21_outer_radius() -> None:
+    ref = compute_w06_reference_radii(90.0, 20.0, rmw_km=30.0, r34_mean_km=200.0)
+    pa21 = compute_parametric_radii(np.array([90.0]), np.array([20.0]), rmax_variant="pa21")
+    assert ref["r_outer_km"] == pytest.approx(float(pa21["r_outer_km"][0]))
+    assert ref["r34_km"] == pytest.approx(float(pa21["r34_km"][0]))
+    assert ref["r_outer_km"] > ref["r34_km"] > ref["rmax_km"] > 0.0
+
+def test_r_w06_reference_is_pa21_outer_radius() -> None:
+    ref = compute_w06_reference_radii(90.0, 20.0, rmw_km=30.0, r34_mean_km=200.0)
+    pa21 = compute_parametric_radii(np.array([90.0]), np.array([20.0]), rmax_variant="pa21")
+    assert ref["r_outer_km"] == pytest.approx(float(pa21["r_outer_km"][0]))
+    assert ref["r34_km"] == pytest.approx(float(pa21["r34_km"][0]))
+    assert ref["r_outer_km"] > ref["r34_km"] > ref["rmax_km"] > 0.0
+
+
+# ------------------------------------------------------------------ compute_itchi_snapshot
+
+
+def test_snapshot_is_built_from_its_components() -> None:
+    lon, lat = _grid()
+    p6, r24, a72 = _fields(lon.shape)
+    res = _snap(p6, r24, a72, lon, lat, rocloud_by_quadrant={q: 100.0 for q in QUADS}, run_quality_control=True)
+    r_w06 = _r_w06()
+    assert set(res["R_attr_status"].values()) == {"w06_floor"}
+    assert res["R_attr_by_quadrant"] == pytest.approx({q: r_w06 for q in QUADS})
+    hp = compute_precipitation_matrix_hazard(p6, Q6, {"R24": r24, "A72": a72}, {"R24": Q24, "A72": Q72})
+    np.testing.assert_allclose(res["H_P"], hp)
+    r34_mean = np.mean([120.0, 100.0, 60.0, 80.0]) * 1.852
+    wind = compute_w06_wind_hazard_with_tail(
+        res["radius_km"], res["R_direct_q"], res["R_W06_q"], vmax_kt=95.0, lat=20.0, rmw_km=30.0,
+        r34_mean_km=r34_mean, tail_end_wind_kt=KT_12MS)
+    region = res["M_direct"] | res["M_indirect"]
+    np.testing.assert_allclose(res["H_W"][region], wind["H_W"][region], atol=1e-12)
+    # ITCHI = unión de componentes en cada región
+    d, i = res["M_direct"], res["M_indirect"]
+    np.testing.assert_allclose(res["ITCHI"][d], 1 - (1 - res["H_W"][d]) * (1 - res["H_P"][d]), atol=1e-12)
+    np.testing.assert_allclose(res["ITCHI"][i], 1 - (1 - res["H_W"][i]) * (1 - res["H_P"][i]), atol=1e-12)
+    assert res["wind_tail_end_kt"] == pytest.approx(KT_12MS)
+    assert res["wind_absolute_nodes"] == SAFFIR_SIMPSON_HAZARD_NODES
+
+
+def test_snapshot_hurricane_classes() -> None:
+    # Categoría 3 (100 kt): el ojo y la pared llegan a la clase 5 solo por viento
+    lon, lat = _grid()
+    p6 = np.zeros(lon.shape)
+    res = _snap(p6, p6, p6, lon, lat, vmax_kt=100.0)
+    assert float(np.max(res["H_W"])) > 0.8
+    assert float(np.max(res["ITCHI"])) == pytest.approx(float(np.max(res["H_W"])))
+
+
+def test_snapshot_wind_ends_at_r_w06_and_rain_extends_to_rocloud() -> None:
+    lon, lat = _grid()
+    p6, r24, a72 = _fields(lon.shape)
+    r_w06 = _r_w06()
+    roc = {"RNE": r_w06 + 200.0, "RSE": None, "RSW": 0.0, "RNW": r_w06 - 100.0}
+    res = _snap(p6, r24, a72, lon, lat, rocloud_by_quadrant=roc, run_quality_control=True)
+
+    assert res["R_attr_status"] == {
+        "RNE": "rocloud", "RSE": "w06_missing_rocloud",
+        "RSW": "w06_missing_rocloud", "RNW": "w06_floor",
+    }
+    assert res["R_attr_by_quadrant"]["RNE"] == pytest.approx(r_w06 + 200.0)
+
+    beyond = res["radius_km"] >= res["R_W06_q"]
+    assert (res["H_W"][beyond] < 1e-12).all()
+    band = res["M_indirect"] & beyond          # indirect region beyond R_W06 (RNE)
+    assert band.any()
+    np.testing.assert_allclose(res["H_ind"][band], res["H_Pind"][band])
+    assert (res["ITCHI"][res["M_exterior"]] == 0.0).all()
+
+
+def test_snapshot_without_rocloud_uses_r_w06() -> None:
+    lon, lat = _grid()
+    p6, r24, a72 = _fields(lon.shape)
+    res = _snap(p6, r24, a72, lon, lat)
+    assert set(res["R_attr_status"].values()) == {"w06_missing_rocloud"}
+    assert res["R_attr_by_quadrant"] == pytest.approx(res["R_W06_by_quadrant"])
+
+
+def test_snapshot_missing_precipitation() -> None:
+    lon, lat = _grid()
+    p6, r24, a72 = _fields(lon.shape)
+    p6[:5, :5] = np.nan
+    res = _snap(p6, r24, a72, lon, lat)
+    assert res["H_P_missing"][:5, :5].all() and not res["H_P_missing"][5:, 5:].any()
+    assert (res["H_P"][:5, :5] == 0.0).all()
+    kept = _snap(p6, r24, a72, lon, lat, precipitation_nan_value=None)
+    assert np.isnan(kept["H_P"][:5, :5]).all()
+
+
+def test_snapshot_tropical_depression_without_r34() -> None:
+    lon, lat = _grid()
+    p6, r24, a72 = _fields(lon.shape)
+    res = _snap(p6, r24, a72, lon, lat, vmax_kt=30.0, rmw_km=None,
+               r34_by_quadrant={q: None for q in QUADS})
+    assert res["R_direct_source"] == "RMW_fallback_for_tropical_depression"
+    assert 0.0 < float(np.max(res["H_W"])) < 0.2                   # depresión tropical: cola (clase 1)
+
+
+def test_snapshot_xarray_matches_numpy() -> None:
+    lon, lat = _grid()
+    p6, r24, a72 = _fields(lon.shape)
+    coords = {"lat": lat[:, 0], "lon": lon[0, :]}
+
+    def da(values: np.ndarray) -> xr.DataArray:
+        return xr.DataArray(values, dims=("lat", "lon"), coords=coords)
+
+    roc = {"RNE": 900.0, "RSE": None, "RSW": 300.0, "RNW": 0.0}
+    ref = _snap(p6, r24, a72, lon, lat, rocloud_by_quadrant=roc)
+    res = _snap(da(p6), da(r24), da(a72), da(lon), da(lat), rocloud_by_quadrant=roc)
+    for key in ("ITCHI", "H_P", "H_W", "H_ind", "R_attr_q", "R_W06_q"):
+        assert isinstance(res[key], xr.DataArray)
+        assert res[key].dims == ("lat", "lon")
+        np.testing.assert_allclose(res[key].values, ref[key], atol=1e-9)
+
+
+def test_snapshot_rejects_invalid_vmax() -> None:
+    lon, lat = _grid()
+    p6, r24, a72 = _fields(lon.shape)
+    with pytest.raises(ValueError):
+        _snap(p6, r24, a72, lon, lat, vmax_kt=np.nan)
+
+# ------------------------------------------------------------------ configuración
+
+
+def test_knot_constant_matches_wind_profiles() -> None:
+    assert KNOT_TO_MS == KNOT_TO_MS_PROFILES
+
+
+def test_default_config_equals_keyword_defaults() -> None:
+    settings = itchi_settings_from_config(load_default_config())
+    params = inspect.signature(compute_itchi_snapshot).parameters
+    resolved = {"precip_matrix": PRECIP_MATRIX, "r_w06_kwargs": R_W06_DEFAULTS}
+    for key, value in settings.items():
+        default = params[key].default
+        if default is None and key in resolved:
+            default = resolved[key]
+        assert value == default, key
+
+
+def test_settings_can_be_passed_as_kwargs() -> None:
+    lon, lat = _grid()
+    p6, r24, a72 = _fields(lon.shape)
+    settings = itchi_settings_from_config(load_default_config())
+    np.testing.assert_allclose(_snap(p6, r24, a72, lon, lat, **settings)["ITCHI"], _snap(p6, r24, a72, lon, lat)["ITCHI"])
+
+
+def test_experiment_overlay_changes_only_its_keys() -> None:
+    cfg = merge_config(load_default_config(), {"wind": {"tail_end_wind_ms": None}})
+    s = itchi_settings_from_config(cfg)
+    assert s["wind_tail_end_kt"] is None
+    assert s["precip_matrix"] == itchi_settings_from_config()["precip_matrix"]
+    with pytest.raises(ValueError):
+        itchi_settings_from_config(merge_config(load_default_config(), {"wind": {"tail_end_wind_kt": 20.0}}))
+
+
+def test_quantile_names_from_percentile_file() -> None:
+    da = xr.DataArray(
+        np.arange(8.0).reshape(4, 2), dims=("quantile", "x"),
+        coords={"quantile": [0.75, 0.9, 0.99, 0.999]},
+    )
+    out = quantile_dataarray_to_dict(da)
+    assert list(out) == ["Q75", "Q90", "Q99", "Q99.9"]
+    np.testing.assert_allclose(out["Q99.9"].values, [6.0, 7.0])

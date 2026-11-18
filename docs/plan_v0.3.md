@@ -8,7 +8,9 @@ Después, medir con cuánta anticipación lo detectan los pronósticos (AIFS).
 
 **Versión.** v0.3.0. Cambia la definición del peligro (periodos de retorno,
 viento absoluto y número de niveles distinto de SIAT-CT), así que no es un
-parche de v0.2. Se desarrolla en la rama `dev/v0.3` desde `main` con v0.2.1.
+parche de v0.2. Se desarrolla en la rama `dev/v0.3` desde `main` con v0.2.2.
+Al empezar v0.3 se retiraron v0.1, v0.2.0 y los experimentos del Bloque 1 y del
+avance (siguen en el tag `v0.2.2`); el esquema vigente es el de v0.2.2.
 
 ---
 
@@ -24,11 +26,20 @@ parche de v0.2. Se desarrolla en la rama `dev/v0.3` desde `main` con v0.2.1.
 | P6 | El número de niveles no está fijo (de 2 a 5); se elige con criterios explícitos (sección 3, F3) | Los niveles SIAT-CT son de comunicación operativa, no de peligro |
 | P7 | Se separan **datos** y **esquema**: primero se guarda un catálogo de variables físicas bajo cada ciclón y después se evalúa cualquier esquema sobre él | Así se pueden probar umbrales y niveles en segundos, sin releer MSWEP |
 
-## 2. Lo que ya existe (v0.2.1)
+## 2. Lo que ya existe (esquema vigente, v0.2.2)
 
-- **Código:** `compute_itchi_snapshot_v02` (malla, por tiempo sinóptico); tabla de
-  clases P6 × R24 × A72; perfiles W06 y radios R_W06 (PA21); regla ROCLOUD con
-  piso R_W06; configuración por overlays (`configs/experiments/`).
+- **Código:** `pipeline.compute_itchi_snapshot` (malla, por tiempo sinóptico),
+  con los valores por defecto de `configs/default.yaml`:
+  - lluvia: matriz P6 × (R24, A72) con máximo en el P95 de 6 h; la escalada
+    solo sube P90 a 0.8 (`precipitation.PRECIP_MATRIX`);
+  - viento: peligro absoluto Saffir-Simpson con el perfil W06 calibrado a R34
+    por cuadrante; cola cortada en 12 m/s; clases cola → 1, TT → 2, H1 → 3,
+    H2 → 4, ≥ H3 → 5;
+  - atribución: ROCLOUD con piso R_W06 por cuadrante;
+  - casos y agregación municipal: `itchi.cases`, `itchi.municipal` y
+    `scripts/casos.py`;
+  - experimentos: overlays sobre `configs/default.yaml` en `configs/experiments/`
+    (`config.load_experiment_config`).
 - **Datos procesados:**
   - acumulados de 6 h de MSWEP V3 en `D:/MSWEP_V316_6H/mswep_v3_6h_AAAA.nc`;
   - percentiles de 6, 24 y 72 h (`p_wet_raw`) en
@@ -37,13 +48,15 @@ parche de v0.2. Se desarrolla en la rama `dev/v0.3` desde `main` con v0.2.1.
     `outputs/diagnostics/declaratorias_6h/` (381 929 pares; 2 977 768 pasos);
   - declaratorias asociadas a ciclones por fecha.
 - **Resultados que orientan v0.3:**
-  - verificación v0.2 (`docs/verification_v02.md`);
-  - Bloque 1 (`docs/experimento_b1.md`, sección 9): P95 como máximo no mejora la
+  - verificación v0.2 (`docs/historial/verification_v02.md`);
+  - Bloque 1 (`docs/historial/experimento_b1.md`, sección 9): P95 como máximo no mejora la
     discriminación; R24 y A72 importan por encima de P95; cortar la cola de
-    viento recupera la clase 1.
+    viento recupera la clase 1;
+  - avance v0.2.1 y acuerdos que dieron v0.2.2 (`docs/historial/avance_v021.md`,
+    sección 8).
 - **Escrito para v0.3, todavía sin correr con MSWEP:**
   - `itchi.return_periods`, `scripts/periodos_retorno.py`,
-    `scripts/figuras_retorno.py` y `notebooks/third test/10_periodos_retorno.ipynb`;
+    `scripts/figuras_retorno.py` y `notebooks/v03/10_periodos_retorno.ipynb`;
   - documentación en `docs/periodos_retorno.md`.
 
 ## 3. Fases
@@ -90,22 +103,23 @@ retorno (1a y 2). Aquí son una sola fase, F1.
     (~16 000 a 0.1°), unas 4 × 10⁷ filas. Se guarda en Parquet o Zarr
     particionado por año, no en CSV.
 - **Terminado cuando** el catálogo reproduce, para Cristóbal 2020 y Odile 2014,
-  los campos de `compute_itchi_snapshot_v02` (prueba de consistencia).
+  los campos de `compute_itchi_snapshot` (prueba de consistencia).
 
 ### F3. Esquemas sobre el catálogo (orden de trabajo 1c, 3 y 4)
 
 - **Lluvia.** Nivel = máximo sobre las duraciones del nivel de T, con fronteras
   en años. Las fronteras exactas se deciden con F1 y la prueba ordinal.
-- **Viento** (niveles escalonados, Saffir-Simpson local). Ejemplo con 4 niveles:
+- **Viento** (niveles escalonados, Saffir-Simpson local; acordado en v0.2.2):
 
   | Nivel | Viento local |
   |---|---|
-  | 0 | < 34 kt |
-  | 1 | Tormenta tropical (34–63 kt) |
-  | 2 | Categorías 1–2 (64–95 kt) |
-  | 3 | Huracán mayor (≥ 96 kt, corte operativo de NHC) |
+  | 1 | Cola (12 m/s a 34 kt) |
+  | 2 | Tormenta tropical (34–63 kt) |
+  | 3 | Moderado: H1 (64–82 kt) |
+  | 4 | Alto: H2 (83–95 kt) |
+  | 5 | Máximo: huracán mayor (≥ 96 kt, corte operativo de NHC) |
 
-  La cola por debajo de 34 kt se corta en 17 kt o en 12 m/s; falta justificarlo
+  La cola por debajo de 34 kt se corta en 12 m/s; falta justificarlo
   físicamente. El Bloque 1 dio PSS de clase 1 de 0.480 con 17 kt y 0.472 con
   12 m/s.
 - **Combinación.** Nivel ITCHI = máximo del nivel de lluvia y el de viento. Es
@@ -141,8 +155,7 @@ retorno (1a y 2). Aquí son una sola fase, F1.
 
 1. Separación entre eventos y picos por temporada en F1.
 2. Fronteras de los niveles de lluvia en años.
-3. Corte de la cola de viento (17 kt o 12 m/s) y agrupación de las categorías
-   Saffir-Simpson.
+3. Justificación física del corte de la cola de viento en 12 m/s.
 4. Agregación municipal: máximo, fracción de área en nivel ≥ k o cuantil alto.
 5. Combinación por máximo de niveles en lugar de la unión probabilística.
 6. Viento sobre tierra: el «viento equivalente en terreno abierto» (como

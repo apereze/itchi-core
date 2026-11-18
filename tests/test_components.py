@@ -87,7 +87,7 @@ def test_direct_component_noisy_or_numpy() -> None:
 
 def test_indirect_component_equals_indirect_precipitation() -> None:
     """
-    Test that H_ind equals H_Pind in ITCHI v0.1.
+    Test that H_ind equals H_Pind without indirect wind hazard.
     """
     hpind = np.array([0.0, 0.2, 0.8, 1.0])
 
@@ -196,3 +196,21 @@ def test_components_preserve_xarray_dimensions() -> None:
         assert component.shape == hp.shape
         assert float(component.min()) >= 0.0
         assert float(component.max()) <= 1.0
+
+
+def test_indirect_component_union() -> None:
+    h = compute_indirect_component(np.array([0.0, 0.5, 0.5]), indirect_wind_hazard=np.array([0.2, 0.0, 0.2]))
+    np.testing.assert_allclose(h, [0.2, 0.5, 0.6])
+    np.testing.assert_allclose(compute_indirect_component(np.array([0.3])), [0.3])
+
+
+def test_components_without_indirect_wind() -> None:
+    hp = np.array([0.2, 0.4, 0.6])
+    hw = np.array([0.5, 0.5, 0.5])
+    d = np.array([True, False, False])
+    i = np.array([False, True, False])
+    v01 = compute_hazard_components(hp, hw, d, i)
+    assert set(v01) == {"H_Pdir", "H_Pind", "H_W", "H_dir", "H_ind"}
+    v02 = compute_hazard_components(hp, hw, d, i, wind_hazard_indirect=hw)
+    np.testing.assert_allclose(v02["H_W"], [0.5, 0.5, 0.0])
+    np.testing.assert_allclose(v02["H_ind"], [0.0, 1 - 0.5 * 0.6, 0.0])

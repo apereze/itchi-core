@@ -1,26 +1,11 @@
 """
-Wind-hazard utilities for ITCHI.
+Wind hazard of ITCHI.
 
-This module provides utilities to estimate and normalize wind hazard fields.
-
-For ITCHI v0.1, wind hazard is represented as a normalized field V* in [0, 1].
-The final activation of wind hazard inside the direct region is handled later
-by components.py using the direct-region mask.
-
-Main functions
---------------
-compute_radial_wind_profile:
-    Builds a simple parametric radial wind profile from Vmax and RMW.
-
-normalize_wind_hazard:
-    Converts wind speed in knots to normalized wind hazard V*.
-
-compute_wind_hazard_from_profile:
-    Convenience function that builds a radial wind profile and normalizes it.
-
-normalize_wind_hazard_with_tail:
-    ITCHI v0.2 normalization: wind hazard inside R_direct plus a tail that
-    decays with the wind profile down to zero at the attribution radius.
+The wind hazard is absolute and homologated with the Saffir-Simpson scale
+(``normalize_wind_hazard_absolute``): the same local wind gives the same H_W
+in every storm. The local wind comes from the W06 profile calibrated to R34
+(parametric_radii.compute_w06_wind_hazard_with_tail); below 34 kt a tail
+decays to zero at the tail-end wind (12 m s-1 or V(R_W06_q)).
 """
 
 from __future__ import annotations
@@ -30,7 +15,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from itchi.constants import DEFAULT_EPSILON, TROPICAL_STORM_WIND_KT
+from itchi.constants import DEFAULT_EPSILON
 
 ArrayLike = np.ndarray | xr.DataArray
 
@@ -52,341 +37,6 @@ def _clip_unit_interval(values: ArrayLike) -> ArrayLike:
     return np.clip(np.asarray(values, dtype=float), 0.0, 1.0)
 
 
-def _validate_positive_scalar(value: float, name: str) -> None:
-    """
-    Validate that a scalar value is finite and positive.
-    """
-    if not np.isfinite(float(value)) or float(value) <= 0.0:
-        raise ValueError(f"{name} must be finite and positive. Received: {value}")
-
-
-def compute_radial_wind_profile(
-    radius_km: ArrayLike,
-    vmax_kt: float,
-    rmw_km: float,
-    inner_exponent: float = 1.0,
-    outer_decay_exponent: float = 0.5,
-    outer_radius_km: float | None = None,
-    minimum_radius_km: float = DEFAULT_EPSILON,
-) -> ArrayLike:
-    """
-    Compute a simple radial wind profile.
-
-    The profile is intentionally simple and intended as a first-order
-    approximation for ITCHI v0.1 development.
-
-    For r <= RMW:
-
-        V(r) = Vmax * (r / RMW)^inner_exponent
-
-    For r > RMW:
-
-        V(r) = Vmax * (RMW / r)^outer_decay_exponent
-
-    If outer_radius_km is provided, wind is set to zero outside that radius.
-
-    Parameters
-    ----------
-    radius_km : numpy.ndarray or xarray.DataArray
-        Radial distance from cyclone center in kilometers.
-    vmax_kt : float
-        Maximum sustained wind in knots.
-    rmw_km : float
-        Radius of maximum wind in kilometers.
-    inner_exponent : float, default=1.0
-        Shape parameter inside RMW.
-    outer_decay_exponent : float, default=0.5
-        Decay parameter outside RMW.
-    outer_radius_km : float or None, default=None
-        Optional outer radius beyond which wind is set to zero.
-    minimum_radius_km : float, default=1e-6
-        Minimum radius used for numerical stability.
-
-    Returns
-    -------
-    numpy.ndarray or xarray.DataArray
-        Estimated wind speed in knots.
-    """
-    _validate_positive_scalar(vmax_kt, "vmax_kt")
-    _validate_positive_scalar(rmw_km, "rmw_km")
-    _validate_positive_scalar(inner_exponent, "inner_exponent")
-    _validate_positive_scalar(outer_decay_exponent, "outer_decay_exponent")
-
-    if outer_radius_km is not None:
-        _validate_positive_scalar(outer_radius_km, "outer_radius_km")
-
-    if _contains_xarray_object(radius_km):
-        radius = radius_km.clip(min=minimum_radius_km)
-        inside_rmw = radius <= rmw_km
-
-        inner_wind = vmax_kt * (radius / rmw_km) ** inner_exponent
-        outer_wind = vmax_kt * (rmw_km / radius) ** outer_decay_exponent
-
-        wind = xr.where(inside_rmw, inner_wind, outer_wind)
-
-        if outer_radius_km is not None:
-            wind = xr.where(radius_km <= outer_radius_km, wind, 0.0)
-
-        return wind.clip(min=0.0, max=vmax_kt)
-
-    radius = np.maximum(np.asarray(radius_km, dtype=float), minimum_radius_km)
-    inside_rmw = radius <= rmw_km
-
-    inner_wind = vmax_kt * (radius / rmw_km) ** inner_exponent
-    outer_wind = vmax_kt * (rmw_km / radius) ** outer_decay_exponent
-
-    wind = np.where(inside_rmw, inner_wind, outer_wind)
-
-    if outer_radius_km is not None:
-        wind = np.where(
-            np.asarray(radius_km, dtype=float) <= outer_radius_km, wind, 0.0
-        )
-
-    return np.clip(wind, 0.0, vmax_kt)
-
-
-def normalize_wind_hazard(
-    wind_kt: ArrayLike,
-    vmax_kt: float,
-    reference_wind_kt: float = TROPICAL_STORM_WIND_KT,
-    below_threshold_mode: str = "relative_to_vmax",
-    epsilon: float = DEFAULT_EPSILON,
-) -> ArrayLike:
-    """
-    Normalize wind speed into wind hazard V*.
-
-    For systems with Vmax > reference_wind_kt, the default normalization is:
-
-        V* = clip((V - reference_wind_kt) / (Vmax - reference_wind_kt), 0, 1)
-
-    For systems with Vmax <= reference_wind_kt, such as tropical depressions,
-    the standard tropical-storm-force normalization cannot be applied because
-    the denominator is zero or negative. In that case, below_threshold_mode
-    controls the behavior:
-
-    - "relative_to_vmax":
-        V* = clip(V / Vmax, 0, 1)
-
-    - "zero":
-        V* = 0 everywhere
-
-    Parameters
-    ----------
-    wind_kt : numpy.ndarray or xarray.DataArray
-        Wind speed field in knots.
-    vmax_kt : float
-        Maximum sustained wind in knots.
-    reference_wind_kt : float, default=34.0
-        Reference wind threshold in knots.
-    below_threshold_mode : {"relative_to_vmax", "zero"}, default="relative_to_vmax"
-        Normalization rule when Vmax <= reference_wind_kt.
-    epsilon : float, default=1e-6
-        Small value used for numerical stability.
-
-    Returns
-    -------
-    numpy.ndarray or xarray.DataArray
-        Normalized wind hazard V* in [0, 1].
-    """
-    _validate_positive_scalar(vmax_kt, "vmax_kt")
-    _validate_positive_scalar(reference_wind_kt, "reference_wind_kt")
-
-    mode = below_threshold_mode.lower().strip()
-
-    if float(vmax_kt) > float(reference_wind_kt):
-        denominator = max(float(vmax_kt) - float(reference_wind_kt), epsilon)
-        hazard = (wind_kt - reference_wind_kt) / denominator
-        return _clip_unit_interval(hazard)
-
-    if mode == "relative_to_vmax":
-        denominator = max(float(vmax_kt), epsilon)
-        hazard = wind_kt / denominator
-        return _clip_unit_interval(hazard)
-
-    if mode == "zero":
-        if _contains_xarray_object(wind_kt):
-            return xr.zeros_like(wind_kt, dtype=float)
-
-        return np.zeros_like(np.asarray(wind_kt, dtype=float), dtype=float)
-
-    raise ValueError(
-        "Unsupported below_threshold_mode. " "Expected 'relative_to_vmax' or 'zero'."
-    )
-
-
-def apply_wind_mask(
-    wind_hazard_normalized: ArrayLike,
-    mask: np.ndarray | xr.DataArray,
-    fill_value: float = 0.0,
-) -> ArrayLike:
-    """
-    Apply a Boolean mask to normalized wind hazard.
-
-    Parameters
-    ----------
-    wind_hazard_normalized : numpy.ndarray or xarray.DataArray
-        Normalized wind hazard V*.
-    mask : numpy.ndarray or xarray.DataArray
-        Boolean mask where True indicates active cells.
-    fill_value : float, default=0.0
-        Value assigned outside the active mask.
-
-    Returns
-    -------
-    numpy.ndarray or xarray.DataArray
-        Masked wind hazard.
-    """
-    wind_hazard_normalized = _clip_unit_interval(wind_hazard_normalized)
-
-    if _contains_xarray_object(wind_hazard_normalized, mask):
-        return xr.where(mask, wind_hazard_normalized, fill_value)
-
-    return np.where(
-        np.asarray(mask, dtype=bool),
-        np.asarray(wind_hazard_normalized, dtype=float),
-        fill_value,
-    )
-
-
-def compute_wind_hazard_from_profile(
-    radius_km: ArrayLike,
-    vmax_kt: float,
-    rmw_km: float,
-    reference_wind_kt: float = TROPICAL_STORM_WIND_KT,
-    below_threshold_mode: str = "relative_to_vmax",
-    inner_exponent: float = 1.0,
-    outer_decay_exponent: float = 0.5,
-    outer_radius_km: float | None = None,
-    active_mask: np.ndarray | xr.DataArray | None = None,
-) -> ArrayLike:
-    """
-    Compute normalized wind hazard from a radial wind profile.
-
-    Parameters
-    ----------
-    radius_km : numpy.ndarray or xarray.DataArray
-        Radial distance from cyclone center in kilometers.
-    vmax_kt : float
-        Maximum sustained wind in knots.
-    rmw_km : float
-        Radius of maximum wind in kilometers.
-    reference_wind_kt : float, default=34.0
-        Reference wind threshold in knots.
-    below_threshold_mode : {"relative_to_vmax", "zero"}, default="relative_to_vmax"
-        Normalization rule when Vmax <= reference_wind_kt.
-    inner_exponent : float, default=1.0
-        Shape parameter inside RMW.
-    outer_decay_exponent : float, default=0.5
-        Decay parameter outside RMW.
-    outer_radius_km : float or None, default=None
-        Optional outer radius beyond which wind is set to zero.
-    active_mask : numpy.ndarray, xarray.DataArray or None, default=None
-        Optional mask used to deactivate wind hazard outside a target region.
-
-    Returns
-    -------
-    numpy.ndarray or xarray.DataArray
-        Normalized wind hazard V* in [0, 1].
-    """
-    wind_kt = compute_radial_wind_profile(
-        radius_km=radius_km,
-        vmax_kt=vmax_kt,
-        rmw_km=rmw_km,
-        inner_exponent=inner_exponent,
-        outer_decay_exponent=outer_decay_exponent,
-        outer_radius_km=outer_radius_km,
-    )
-
-    wind_hazard = normalize_wind_hazard(
-        wind_kt=wind_kt,
-        vmax_kt=vmax_kt,
-        reference_wind_kt=reference_wind_kt,
-        below_threshold_mode=below_threshold_mode,
-    )
-
-    if active_mask is not None:
-        return apply_wind_mask(
-            wind_hazard_normalized=wind_hazard,
-            mask=active_mask,
-            fill_value=0.0,
-        )
-
-    return wind_hazard
-
-
-def normalize_wind_hazard_with_tail(
-    wind_kt: ArrayLike,
-    vmax_kt: float,
-    direct_mask: np.ndarray | xr.DataArray,
-    outer_wind_kt: float | ArrayLike,
-    h34: float = 0.2,
-    reference_wind_kt: float = TROPICAL_STORM_WIND_KT,
-    epsilon: float = DEFAULT_EPSILON,
-) -> ArrayLike:
-    """
-    ITCHI v0.2 wind hazard with an outer tail.
-
-    Inside the direct region (r <= R_direct_q) of a system with
-    Vmax > reference_wind_kt:
-
-        H_W = h34 + (1 - h34) * clip((V - V34) / (Vmax - V34), 0, 1)
-
-    Outside the direct region, and everywhere for Vmax <= reference_wind_kt:
-
-        H_W = h34 * clip((V - V_out) / (V34 - V_out), 0, 1)
-
-    where V34 = reference_wind_kt and V_out is the wind at the attribution
-    radius of the same quadrant, so the tail decays with the wind profile and
-    vanishes at the attribution boundary. If V(R_direct_q) = V34 (W06 profile
-    calibrated to R34), H_W is continuous at R_direct_q with value h34.
-
-    h34 is the hazard assigned to the onset of tropical-storm-force winds;
-    below 34 kt sustained, wind damage is small, so h34 should stay low
-    (default 0.2, the upper bound of the lowest SIAT-style class).
-
-    Parameters
-    ----------
-    wind_kt : numpy.ndarray or xarray.DataArray
-        Wind speed field in knots.
-    vmax_kt : float
-        Maximum sustained wind in knots.
-    direct_mask : numpy.ndarray or xarray.DataArray
-        True inside the direct region.
-    outer_wind_kt : float, numpy.ndarray or xarray.DataArray
-        Wind speed (kt) at the attribution radius of each cell's quadrant.
-    h34 : float, default=0.2
-        Hazard at V = V34; must be in [0, 1].
-    reference_wind_kt : float, default=34.0
-        Tropical-storm-force threshold V34 in knots.
-    epsilon : float, default=1e-6
-        Small value for numerical stability.
-
-    Returns
-    -------
-    numpy.ndarray or xarray.DataArray
-        Normalized wind hazard in [0, 1].
-    """
-    _validate_positive_scalar(vmax_kt, "vmax_kt")
-    _validate_positive_scalar(reference_wind_kt, "reference_wind_kt")
-    if not 0.0 <= float(h34) <= 1.0:
-        raise ValueError(f"h34 must be in [0, 1]. Received: {h34}")
-
-    where = xr.where if _contains_xarray_object(wind_kt, direct_mask, outer_wind_kt) else np.where
-    v34 = float(reference_wind_kt)
-
-    tail_den = np.maximum(v34 - outer_wind_kt, epsilon)
-    tail = h34 * _clip_unit_interval((wind_kt - outer_wind_kt) / tail_den)
-
-    if float(vmax_kt) <= v34:
-        return _clip_unit_interval(tail)
-
-    inner = h34 + (1.0 - h34) * _clip_unit_interval(
-        (wind_kt - v34) / max(float(vmax_kt) - v34, epsilon)
-    )
-
-    return _clip_unit_interval(where(direct_mask, inner, tail))
-
-
 def normalize_wind_hazard_absolute(
     wind_kt: ArrayLike,
     outer_wind_kt: float | ArrayLike,
@@ -394,22 +44,19 @@ def normalize_wind_hazard_absolute(
     epsilon: float = DEFAULT_EPSILON,
 ) -> ArrayLike:
     """
-    Absolute wind hazard (Saffir-Simpson scale; v0.2.1 proposal, default of
-    configs/default.yaml since v0.2.2).
+    Absolute wind hazard homologated with the Saffir-Simpson scale.
 
-    Unlike normalize_wind_hazard_with_tail, H_W does not depend on the Vmax
-    of the storm: the same local wind gives the same hazard in every storm.
+    H_W does not depend on the Vmax of the storm: the same local wind gives
+    the same hazard in every storm.
     With nodes (V_1, h_1), ..., (V_n, h_n), V_1 = 34 kt:
 
         V <  V_1 :  H_W = h_1 * clip((V - V_out) / (V_1 - V_out), 0, 1)
         V >= V_1 :  H_W = linear interpolation between nodes, h_n above V_n
 
     V_out is the tail-end wind of each cell (V(R_W06_q), or the cut speed,
-    e.g. 12 m s-1, whichever is larger), so the tail is the same as in v0.2
-    with h34 = h_1. The default nodes (constants.SAFFIR_SIMPSON_HAZARD_NODES)
-    put the Saffir-Simpson categories in the SIAT-style classes of 0.2
-    (v0.2.2): tail -> 1, TS -> 2, H1 -> 3, H2 -> 4, H3-H5 -> 5; the v0.2.1
-    proposal is constants.SAFFIR_SIMPSON_HAZARD_NODES_V021. The classes are
+    12 m s-1, whichever is larger). The default nodes (constants.SAFFIR_SIMPSON_HAZARD_NODES)
+    put the Saffir-Simpson categories in the SIAT-style classes of 0.2:
+    tail -> 1, TS -> 2, H1 -> 3, H2 -> 4, H3-H5 -> 5. The classes are
     (lower, upper], so a wind exactly on a category bound (e.g. 64 kt, H =
     0.4) falls in the lower class; this only happens on a contour line.
 

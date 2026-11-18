@@ -115,7 +115,7 @@ def load_experiment_config(
     """
     Configuration of an experiment: configs/default.yaml with an overlay.
 
-    The overlay (e.g. configs/experiments/b1/p1_w1.yaml) lists only the keys
+    The overlay (a YAML file under configs/experiments/) lists only the keys
     that change; ``experiment`` (name, description) is kept for traceability.
 
     Parameters
@@ -133,65 +133,36 @@ def load_experiment_config(
     cfg = load_default_config() if base is None else base
     return merge_config(cfg, load_config(overlay_path))
 
-
-def class_table_spec_from_config(table_cfg: Mapping[str, Any]) -> dict[str, Any]:
-    """
-    Class-table spec (precipitation.compute_precipitation_class_table_hazard)
-    from the YAML block precipitation.class_table.
-    """
-    spec: dict[str, Any] = {
-        "kind": "class_table",
-        "axes": {str(k): tuple(str(n) for n in v) for k, v in table_cfg["axes"].items()},
-    }
-    if "table" in table_cfg:
-        spec["table"] = table_cfg["table"]
-    else:
-        spec["p6_values"] = tuple(float(v) for v in table_cfg["p6_values"])
-        spec["rules"] = tuple(
-            {
-                "when": {str(k): str(v) for k, v in rule["when"].items()},
-                "p6_values": tuple(float(v) for v in rule["p6_values"]),
-            }
-            for rule in table_cfg.get("rules", ()) or ()
-        )
-    if table_cfg.get("gate"):
-        spec["gate"] = {str(k): str(v) for k, v in table_cfg["gate"].items()}
-    return spec
-
-
-def itchi_v02_settings_from_config(
+def itchi_settings_from_config(
     config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Keyword arguments of ``pipeline.compute_itchi_snapshot_v02`` from a config.
+    Keyword arguments of ``pipeline.compute_itchi_snapshot`` from a config.
 
     Usage::
 
-        settings = itchi_v02_settings_from_config(load_default_config())
-        result = compute_itchi_snapshot_v02(..., **settings)
+        settings = itchi_settings_from_config(load_experiment_config(overlay))
+        result = compute_itchi_snapshot(..., **settings)
 
-    With configs/experiments/v021/v020.yaml the result equals the keyword
-    defaults of compute_itchi_snapshot_v02, i.e. ITCHI v0.2.0 (checked in
-    tests/test_v02_snapshot.py). configs/default.yaml holds the v0.2.2
-    scheme (maximum at the 6-h P95, Saffir-Simpson wind, tail cut at
-    12 m s-1). An experiment is an overlay on configs/default.yaml.
+    With configs/default.yaml the result equals the keyword defaults of
+    compute_itchi_snapshot (checked in tests/test_pipeline.py); an experiment
+    is an overlay on configs/default.yaml (load_experiment_config).
 
     Parameters
     ----------
     config : Mapping or None, default=None
-        Parsed configuration; None loads configs/default.yaml.
+        Full configuration; None loads configs/default.yaml.
 
     Returns
     -------
     dict[str, Any]
-        precip_matrix, wind_tail_h34, wind_tail_end_kt, wind_hazard_scale,
-        wind_absolute_nodes, w06_attribution_mode,
-        w06_direct_fallback, r_w06_kwargs, precipitation_nan_value,
-        radius_fill_strategy and the ITCHI weights.
+        precip_matrix, precipitation_nan_value, wind_tail_end_kt,
+        wind_absolute_nodes, w06_attribution_mode, w06_direct_fallback,
+        r_w06_kwargs, radius_fill_strategy and the ITCHI weights.
     """
     cfg = load_default_config() if config is None else config
 
-    matrix_cfg = cfg["precipitation"]["matrix_v02"]
+    matrix_cfg = cfg["precipitation"]["matrix"]
     wind_cfg = cfg["wind"]
     radii_cfg = cfg["parametric_radii"]
     r_w06_cfg = radii_cfg["r_w06"]
@@ -205,28 +176,21 @@ def itchi_v02_settings_from_config(
         tail_end_kt = float(tail_end_ms) / KNOT_TO_MS
     nan_value = matrix_cfg.get("nan_hazard_value", 0.0)
 
-    model = str(cfg["precipitation"].get("hazard_model", "matrix_v02"))
-    if model == "matrix_v02":
-        precip_spec: dict[str, Any] = {
-            "p6_nodes": tuple(str(v) for v in matrix_cfg["p6_nodes"]),
-            "base": tuple(float(v) for v in matrix_cfg["base"]),
-            "escalated": tuple(float(v) for v in matrix_cfg["escalated"]),
-            "escalation": {
-                str(name): tuple(str(v) for v in bounds)
-                for name, bounds in matrix_cfg["escalation"].items()
-            },
-            "combine": str(matrix_cfg.get("combine", "all")),
-        }
-    elif model == "class_table":
-        precip_spec = class_table_spec_from_config(cfg["precipitation"]["class_table"])
-    else:
-        raise ValueError(f"Unsupported precipitation.hazard_model: {model!r}")
+    precip_spec: dict[str, Any] = {
+        "p6_nodes": tuple(str(v) for v in matrix_cfg["p6_nodes"]),
+        "base": tuple(float(v) for v in matrix_cfg["base"]),
+        "escalated": tuple(float(v) for v in matrix_cfg["escalated"]),
+        "escalation": {
+            str(name): tuple(str(v) for v in bounds)
+            for name, bounds in matrix_cfg["escalation"].items()
+        },
+        "combine": str(matrix_cfg.get("combine", "all")),
+    }
 
     return {
         "precip_matrix": precip_spec,
-        "wind_tail_h34": float(wind_cfg["tail_h34"]),
+        "precipitation_nan_value": None if nan_value is None else float(nan_value),
         "wind_tail_end_kt": None if tail_end_kt is None else float(tail_end_kt),
-        "wind_hazard_scale": str(wind_cfg.get("hazard_scale", "vmax")),
         "wind_absolute_nodes": tuple(
             (float(v), float(h)) for v, h in wind_cfg.get("saffir_simpson_nodes", SAFFIR_SIMPSON_HAZARD_NODES)
         ),
@@ -238,7 +202,6 @@ def itchi_v02_settings_from_config(
             "calibrate_to_r34": bool(r_w06_cfg["calibrate_to_r34"]),
             "outer_threshold_ms": float(r_w06_cfg["outer_threshold_ms"]),
         },
-        "precipitation_nan_value": None if nan_value is None else float(nan_value),
         "radius_fill_strategy": str(cfg.get("geometry", {}).get("radius_fill_strategy", "mean_available")),
         "alpha_wind": float(weights["alpha_wind"]),
         "beta_precip_direct": float(weights["beta_precip_direct"]),
