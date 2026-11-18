@@ -9,7 +9,7 @@
 
 Computational core of **ITCHI**, a bounded index in [0, 1] of the hazard of
 tropical cyclones that affect Mexico, on a 0.1° grid and by municipality, at
-synoptic times. Version **0.3.0.dev0**: development line v0.3
+synoptic times. Version **0.3.0**: development line v0.3
 ([`docs/plan_v0.3.md`](docs/plan_v0.3.md)) on the scheme agreed in v0.2.2;
 changes in [`CHANGELOG.md`](CHANGELOG.md).
 

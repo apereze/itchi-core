@@ -7,7 +7,7 @@ and this project uses semantic versioning principles while the API is under acti
 
 ---
 
-## [Unreleased] - 0.3.0
+## [0.3.0] - 2026-11-18
 
 Development line v0.3 (`docs/plan_v0.3.md`): hazard defined by climatological
 rarity (return periods) and absolute wind thresholds, on a catalog of physical
@@ -77,7 +77,7 @@ Block 1 and of the v0.2.1 progress report are retired.
   new `docs/methodology.md` for the current scheme; README, `docs/plan_v0.3.md`,
   `docs/development.md` and `notebooks/README.md` updated; notebook 10 moved to
   `notebooks/v03/`.
-- Version 0.3.0.dev0.
+- Version 0.3.0 (`pyproject.toml`, `constants.ITCHI_VERSION`, `configs/default.yaml`, README).
 
 ### Added (cleanup)
 

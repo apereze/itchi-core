@@ -15,7 +15,7 @@
 
 project:
   name: "itchi-core"
-  version: "0.3.0.dev0"
+  version: "0.3.0"
   description: "Core computational workflow for ITCHI"
 
 

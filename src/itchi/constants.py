@@ -11,7 +11,7 @@ from __future__ import annotations
 # ============================================================
 
 PROJECT_NAME: str = "itchi-core"
-ITCHI_VERSION: str = "0.3.0.dev0"
+ITCHI_VERSION: str = "0.3.0"
 
 
 # ============================================================
