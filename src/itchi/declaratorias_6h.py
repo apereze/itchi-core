@@ -51,7 +51,7 @@ Multiduración (requiere percentiles_6h.py --durations 24 72):
     nivel_multidur_pico  opción A: máximo de las clases de P6, R24 y R72
     nivel_base_pico      rampa solo 6 h: <P75, P75, P90, P95, P99 -> 0..4
     nivel_matriz_pico    opción B: rampa base escalada; P95-P99 -> máximo si R24 >= P95 y A72 >= P75
-                         (calibrada con negativos_w06.py; ver Config.escalada_*)
+                         (calibrada en v0.2 con negativos_w06.py, retirado en v0.3: tag v0.2.2; ver Config.escalada_*)
 
 Salidas (outputs/diagnostics/declaratorias_6h/):
 
@@ -130,7 +130,7 @@ class Config:
 
     # Niveles 0 sin, 1 bajo, 2 medio, 3 alto, 4 máximo. Rampa base por clase de P6
     # (<P75, P75-P90, P90-P95, P95-P99, P99-P99.9, >=P99.9) y escalada (opción B)
-    # calibrada con pares municipio-CT (negativos_w06.py): las clases de P6 en
+    # calibrada en v0.2 con pares municipio-CT (negativos_w06.py, retirado en v0.3: tag v0.2.2): las clases de P6 en
     # escalada_clases_P6 suben a escalada_nivel si se cumplen las condiciones
     # (variable, percentil mínimo); "y" exige todas, "o" basta una. Una condición
     # sin dato (p. ej. inicio de temporada) no escala.

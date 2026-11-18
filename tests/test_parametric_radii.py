@@ -10,11 +10,8 @@ import pytest
 
 from itchi.parametric_radii import (
     add_parametric_radii,
-    build_parametric_rocloud_record,
     compute_parametric_radii,
-    compute_w06_wind_hazard,
     fit_x1_to_radius,
-    parametric_direct_fallback_km,
 )
 from itchi.wind_profiles import (
     KNOT_TO_MS,
@@ -111,19 +108,3 @@ def test_track_dataframe_adapter() -> None:
     # calibrated profile reproduces the observed mean R34 (nm -> km)
     r34_mean_km = np.mean([180.0, 150.0, 110.0, 150.0]) * 1.852
     assert out.loc[0, "w06_r34_km"] == pytest.approx(r34_mean_km, rel=1e-6)
-
-    record = build_parametric_rocloud_record(out.iloc[0])
-    r_outer = out.loc[0, "w06_r_outer_km"]
-    assert record["rocloud_rne"] == record["rocloud_rnw"] == r_outer
-    assert parametric_direct_fallback_km(out.iloc[2]) is None
-
-
-def test_w06_wind_hazard_vanishes_at_r34() -> None:
-    radii = compute_parametric_radii(np.array([100.0]), np.array([20.0]))
-    r34 = float(radii["r34_km"][0])
-    radius = np.array([r34 - 1.0, r34, r34 + 50.0])
-    hazard = compute_w06_wind_hazard(radius, 100.0, 20.0)
-
-    assert hazard[0] > 0.0
-    assert hazard[1] == pytest.approx(0.0, abs=1e-6)
-    assert hazard[2] == 0.0

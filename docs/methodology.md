@@ -1,593 +1,101 @@
-# ITCHI Methodology (v0.1 and v0.2)
+# ITCHI methodology (current scheme)
 
-> **Integrated Tropical Cyclone Hazard Index** — A bounded physical hazard index for tropical cyclone conditions combining wind and precipitation hazards on a geospatial grid.
+ITCHI (*Integrated Tropical Cyclone Hazard Index*) is a bounded index in
+[0, 1] of the hazard produced by a tropical cyclone at each grid cell and
+synoptic time. It combines precipitation, measured against the local
+climatology, and wind, measured with absolute Saffir-Simpson thresholds. The
+scheme described here is the default of `configs/default.yaml` and of
+`pipeline.compute_itchi_snapshot` since v0.2.2. Earlier formulations (v0.1,
+v0.2.0) and their verification are in `docs/historial/` and in the git tag
+`v0.2.2`.
 
----
+## 1. Regions
 
-## Overview
-
-ITCHI v0.1 is designed as a bounded physical hazard index that integrates three key components of tropical cyclone hazard:
-
-1. **Direct precipitation** — Precipitation linked to the inner cyclone circulation
-2. **Wind hazard** — Wind conditions near the cyclone core
-3. **Indirect precipitation** — Precipitation from external rainbands or cloud structures
-
-The index is defined spatially on a regular grid and evaluated at cyclone-centered synoptic snapshots.
-
-### Core Output
-
-The fundamental ITCHI output is a bounded scalar field:
-
-$$\text{ITCHI}_{g,h,t} \in [0, 1]$$
-
-where:
-
-| Symbol | Meaning |
-|:-------|:--------|
-| $g$ | Grid cell |
-| $h$ | Tropical cyclone event |
-| $t$ | Valid snapshot time |
-
----
-
-## Design Principles
-
-ITCHI v0.1 follows four foundational principles:
-
-### 1. Physical Interpretability
-Each hazard component must be linked to observable physical tropical cyclone processes, ensuring the index remains scientifically grounded and interpretable.
-
-### 2. Boundedness
-All hazard components and the final index must remain constrained within $[0, 1]$, enabling direct probability or impact interpretations.
-
-### 3. Spatial Attribution
-The index distinguishes between:
-- **Direct cyclone-core effects** (wind + inner precipitation)
-- **Indirect rainband effects** (external precipitation)
-
-This separation enables targeted hazard assessment and regional impact analysis.
-
-### 4. Operational Compatibility
-The methodology is designed to work seamlessly with:
-- Historical satellite/reanalysis products (e.g., MSWEP)
-- Numerical weather prediction (NWP) outputs
-- Hindcasts and reforecasts
-- Downscaled precipitation fields
-- Bias-corrected precipitation products
-
----
-
-## Temporal Framework
-
-### Snapshot Precipitation
-
-Precipitation is treated as a **snapshot** (instantaneous or valid-time state), not as an accumulated field. This means:
-
-- Precipitation from 3-hourly fields **cannot** be directly accumulated to 6-hourly totals
-- The index preserves compatibility with diverse temporal resolutions
-- Temporal alignment is handled separately from hazard quantification
-
-This design accommodates multiple data sources while maintaining methodological consistency.
-
-**Compatible data sources:**
-- MSWEP historical snapshots
-- NWP outputs
-- Hindcasts
-- Downscaled precipitation forecasts
-- Bias-corrected precipitation products
-
-### Synoptic Evaluation Times
-
-ITCHI is evaluated at standard tropical cyclone synoptic times:
-
-$$\text{00, 06, 12, 18 UTC}$$
-
-These times align with conventional tropical cyclone best-track reporting standards (e.g., IBTrACS), enabling direct comparison with observational baselines.
-
----
-
-## Spatial Framework
-
-### Grid Resolution
-
-ITCHI is computed on a regular spatial grid. The target resolution for v0.1 is:
-
-$$0.1° \times 0.1°$$
-
-### Grid Cell Attributes
-
-For each grid cell, the following cyclone-centered quantities are computed:
-
-| Variable | Description |
-|:---------|:------------|
-| `radius_km` | Distance from cyclone center to grid cell |
-| `quadrant` | Relative quadrant of the cell |
-| `R_direct_q` | Effective direct-region radius by quadrant |
-| `ROCLOUD_q` | External attribution radius by quadrant |
-
-### Quadrant Convention
-
-The internal quadrant convention uses compass directions:
-
-$$\text{RNE, RSE, RSW, RNW}$$
-
-| Quadrant | Direction |
-|:---------|:----------|
-| `RNE` | Northeast |
-| `RSE` | Southeast |
-| `RSW` | Southwest |
-| `RNW` | Northwest |
-
-**All geometric comparisons are performed in kilometers.**
-
----
-
-## Radius Definitions
-
-### R34: 34-kt Wind Radius
-
-`R34` is the radius of 34-knot winds by quadrant. When available, it is obtained from tropical cyclone best-track datasets (e.g., IBTrACS).
-
-**Unit conversion:**
-$$1 \text{ nautical mile} = 1.852 \text{ km}$$
-
-Many best-track products report `R34` in nautical miles; ITCHI converts internally to kilometers.
-
-### ROCLOUD: External Attribution Radius
-
-`ROCLOUD` defines the outer boundary of precipitation that can be attributed to the tropical cyclone in ITCHI v0.1:
-
-- Cells **inside** `ROCLOUD` may contribute to ITCHI
-- Cells **outside** `ROCLOUD` do not contribute
-- Defines the extent of the indirect (rainband) region
-
-### R_direct_q: Effective Direct Radius
-
-ITCHI distinguishes between two related quantities:
+For each quadrant q (RNE, RSE, RSW, RNW) of the cyclone:
 
 | Radius | Definition |
-|:-------|:-----------|
-| `R34_q` | Observed or reported 34-kt wind radius (by quadrant) |
-| `R_direct_q` | Effective radius defining the direct hazard region |
+|---|---|
+| R_direct_q | observed R34 (missing quadrants filled with the mean of the valid ones); without R34, the RMW for depressions or the parametric R34 |
+| R_W06_q | radius where the Willoughby et al. (2006) profile falls to 2 m s-1, with the Pérez-Alarcón et al. (2021) configuration (empirical Rmax, no R34 calibration); never below R_direct_q |
+| R_attr_q | ROCLOUD_q with R_W06_q as a floor: R_W06_q where ROCLOUD_q is missing, 0 (no detection) or smaller (`attribution_radius_mode: "floor"`) |
 
-This distinction is necessary because many systems, particularly tropical depressions, do not physically achieve 34-kt winds.
+The direct region is r <= R_direct_q, the indirect region R_direct_q < r <= R_attr_q
+and the exterior r > R_attr_q, where ITCHI = 0.
 
-#### Rules for Computing R_direct_q
+## 2. Precipitation hazard H_P
 
-| Condition | Rule |
-|:----------|:-----|
-| Complete `R34` available | $R_{\text{direct}, q} = R_{34, q}$ |
-| Partial `R34` (missing quadrants) | Fill missing quadrants with mean of available quadrants |
-| No `R34` and $V_{\max} < 34$ kt | Use `RMW` (radius of maximum wind) as $R_{\text{direct}, q}$ |
-| No `R34` and no `RMW` | Use configured `fallback_direct_radius_km` |
-| No valid radius | Raise error |
+Three accumulations of MSWEP V3 at synoptic time T, each compared with its own
+local percentiles (wet windows, May–November, `p_wet_raw`):
 
-**Key principle:** ITCHI does not artificially assign 34-kt wind radii to tropical depressions. Instead, it uses physically interpretable fallbacks based on the radius of maximum wind.
+- P6 = precipitation in (T − 6 h, T];
+- R24 = (T − 24 h, T] (persistence);
+- A72 = (T − 78 h, T − 6 h] (exclusive antecedent, climatology of R72).
 
-### Missing Quadrant Handling
+H_P is a ramp over the 6-h percentiles, escalated when the rain persists on
+wet ground (`precipitation.PRECIP_MATRIX`):
 
-When quadrant-specific radius values are missing (for `R34` or `ROCLOUD`), they are filled using the arithmetic mean of available quadrants, provided at least one valid quadrant exists.
+    H_P = (1 − f) · ramp_base(P6) + f · ramp_esc(P6)
 
-**Example:**
+| P6 | 0 mm | P75 | P90 | P95 |
+|---|--:|--:|--:|--:|
+| ramp_base | 0 | 0 | 0.25 | 1 |
+| ramp_esc | 0 | 0 | 0.8 | 1 |
 
-Given:
-```python
-{
-    "RNE": 120.0,
-    "RSE": 100.0,
-    "RSW": None,
-    "RNW": 140.0,
-}
-```
+with f = f_R24 · f_A72, f_R24 = clip((R24 − P90₂₄)/(P95₂₄ − P90₂₄), 0, 1) and
+f_A72 = clip(A72 / P75₇₂, 0, 1). The maximum is the 6-h P95; the escalation
+only acts on the P6 node below the maximum. A missing value or percentile
+gives f = 0; a missing P6 or 6-h percentile gives H_P = 0.
 
-Available mean:
-$$\bar{R} = \frac{120 + 100 + 140}{3} = 120 \text{ km}$$
+## 3. Wind hazard H_W
 
-Resolved radius:
-```python
-{
-    "RNE": 120.0,
-    "RSE": 100.0,
-    "RSW": 120.0,  # Imputed
-    "RNW": 140.0,
-}
-```
+The local wind V is the W06 profile for (Vmax, latitude, RMW), with X1 fitted
+to the observed azimuthal-mean R34 and the radius scaled by quadrant so that
+V = 34 kt at R_direct_q. H_W is absolute: it does not depend on the storm
+Vmax, except inside the RMW, which takes the hazard of Vmax (the eyewall
+crosses the cell within the 6-h window).
 
-All imputations are recorded in output metadata for traceability.
+| Local wind (kt, 1-min) | Category | H_W | Class |
+|---|---|---|---|
+| 23.3–34 (12 m s-1 to 34 kt) | tail | 0–0.2 | 1 |
+| 34–63 | tropical storm | 0.2–0.4 | 2 |
+| 64–82 | H1 | 0.4–0.6 | 3 (moderate) |
+| 83–95 | H2 | 0.6–0.8 | 4 (high) |
+| ≥ 96 | H3–H5 (major hurricane) | 0.8–1 (1 from 137 kt) | 5 (maximum) |
 
----
+H_W is linear between the nodes (`constants.SAFFIR_SIMPSON_HAZARD_NODES`);
+below 34 kt the tail is 0.2 (V − V_out)/(34 − V_out), with
+V_out = max(V(R_W06_q), 12 m s-1). Thresholds: NHC Saffir-Simpson Hurricane
+Wind Scale, https://www.nhc.noaa.gov/aboutsshws.php.
 
-## Spatial Regions
+## 4. Components and index
 
-ITCHI v0.1 partitions the cyclone environment into three mutually exclusive, exhaustive regions:
+    H_dir = 1 − (1 − H_W)^α (1 − H_P)^β        (direct region)
+    H_ind = 1 − (1 − H_W) (1 − H_P)            (indirect region; H_W is the tail)
+    ITCHI = 1 − (1 − H_dir)^λ (1 − H_ind)^μ
 
-### Direct Region
+with α = β = λ = μ = 1. Classes are steps of 0.2, (lower, upper]
+(`plotting.classify_itchi_to_siat_levels`).
 
-$$M_{\text{direct}} = \{r_{\text{km}} \leq R_{\text{direct}, q}\}$$
+## 5. Municipal value
 
-The direct region represents the area where wind hazard and direct precipitation hazard may jointly contribute to ITCHI.
+A municipality is represented by the 0.1° cells whose centre falls inside it
+(or the closest cell to its representative point); its value is the maximum
+over those cells (`itchi.municipal.municipal_values`).
 
-### Indirect Region
+## 6. Open decisions (v0.3)
 
-$$M_{\text{indirect}} = \{R_{\text{direct}, q} < r_{\text{km}} \leq \text{ROCLOUD}_q\}$$
-
-The indirect region represents precipitation from external cyclone structures (rainbands, cloud shields).
-
-### Exterior Region
-
-$$M_{\text{exterior}} = \{r_{\text{km}} > \text{ROCLOUD}_q\}$$
-
-The exterior region does not contribute to ITCHI.
-
-### Mask Consistency Requirements
-
-The three spatial masks must be mutually disjoint:
-
-$$M_{\text{direct}} \cap M_{\text{indirect}} = \emptyset$$
-$$M_{\text{direct}} \cap M_{\text{exterior}} = \emptyset$$
-$$M_{\text{indirect}} \cap M_{\text{exterior}} = \emptyset$$
-
-Where all radii are valid, the three regions cover the entire domain:
-
-$$M_{\text{direct}} \cup M_{\text{indirect}} \cup M_{\text{exterior}} = \text{domain}$$
-
----
-
-## Precipitation Hazard
-
-### Percentile-Based Normalization
-
-Precipitation hazard is computed using local climatological percentiles. This approach enables consistent interpretation across diverse geographical regions and precipitation regimes.
-
-**Reference percentiles:**
-
-| Percentile | Interpretation |
-|:-----------|:---------------|
-| $Q_{90}$ | Onset of low or occasional hazard |
-| $Q_{95}$ | High hazard threshold |
-| $Q_{99}$ | Maximum hazard threshold |
-
-The precipitation hazard field $H_P$ is normalized to $[0, 1]$.
-
-### Piecewise Hazard Function
-
-For a precipitation snapshot value $P$:
-
-$$H_P = \begin{cases}
-0 & \text{if } P < Q_{90} \\
-\frac{0.5}{Q_{95} - Q_{90}}(P - Q_{90}) & \text{if } Q_{90} \leq P < Q_{95} \\
-0.5 + \frac{0.5}{Q_{99} - Q_{95}}(P - Q_{95}) & \text{if } Q_{95} \leq P < Q_{99} \\
-1 & \text{if } P \geq Q_{99}
-\end{cases}$$
-
-This formulation:
-- Reaches 0.5 at the $Q_{95}$ threshold (high hazard)
-- Continues to 1.0 at $Q_{99}$ without forcing premature saturation
-- Enables nuanced hazard assessment in the high-precipitation regime
-
----
-
-## Wind Hazard
-
-### Normalized Wind Field
-
-Wind hazard is represented as a normalized wind field $V^*$ in $[0, 1]$:
-
-$$H_W = V^*$$
-
-ITCHI can accept precomputed $V^*$ fields, or compute them internally using:
-- Radial distance from cyclone center ($r$)
-- Maximum sustained wind ($V_{\max}$)
-- Radius of maximum wind (RMW)
-
-### Radial Wind Profile
-
-The initial radial wind profile is intentionally simplified for transparency and testability.
-
-**Inner core** ($r \leq \text{RMW}$):
-$$V(r) = V_{\max} \cdot \left(\frac{r}{\text{RMW}}\right)^a$$
-
-**Outer region** ($r > \text{RMW}$):
-$$V(r) = V_{\max} \cdot \left(\frac{\text{RMW}}{r}\right)^b$$
-
-where:
-
-| Parameter | Meaning |
-|:----------|:--------|
-| $a$ | Inner-core exponent (power-law profile inside RMW) |
-| $b$ | Outer-decay exponent (power-law decay outside RMW) |
-
-**Note:** This is a first-order approximation intended for ITCHI v0.1 development and validation. It is not designed to replace full parametric wind models.
-
-### Wind Normalization: Tropical Storms and Stronger ($V_{\max} > 34$ kt)
-
-For systems with sustained winds exceeding tropical-storm force:
-
-$$V^* = \text{clip}\left(\frac{V(r) - 34}{V_{\max} - 34}, 0, 1\right)$$
-
-This normalization:
-- Sets the lower threshold at 34 kt (tropical storm minimum)
-- Scales linearly from 0 to 1 relative to maximum wind
-- Clips values outside $[0, 1]$
-
-### Wind Normalization: Tropical Depressions ($V_{\max} \leq 34$ kt)
-
-For systems below tropical-storm force, the 34-kt threshold cannot serve as a lower bound. Two modes are supported:
-
-| Mode | Definition | Interpretation |
-|:-----|:-----------|:----------------|
-| `relative_to_vmax` | $V^* = \text{clip}(V(r) / V_{\max}, 0, 1)$ | Relative wind hazard (0 to 100% of Vmax) |
-| `zero` | $V^* = 0$ | No wind hazard below 34 kt |
-
-**Default development mode:** `relative_to_vmax`
-
-**Rationale:** Tropical depressions may produce local wind-related effects even if they do not reach tropical-storm-force winds. This mode enables capturing weaker but potentially impactful wind effects.
-
----
-
-## ITCHI Component Fields
-
-### Direct Precipitation Component
-
-$$H_{P, \text{dir}} = M_{\text{direct}} \cdot H_P$$
-
-Precipitation hazard within the direct region only.
-
-### Indirect Precipitation Component
-
-$$H_{P, \text{ind}} = M_{\text{indirect}} \cdot H_P$$
-
-Precipitation hazard within the indirect region only.
-
-### Wind Component
-
-$$H_W = M_{\text{direct}} \cdot V^*$$
-
-Normalized wind hazard applied only within the direct region.
-
----
-
-## Composite Hazard Components
-
-### Direct Hazard Component
-
-The direct component combines wind and direct precipitation using a bounded union formulation:
-
-$$H_{\text{dir}} = 1 - (1 - H_W)^\alpha \cdot (1 - H_{P, \text{dir}})^\beta$$
-
-**Parameters:**
-
-| Parameter | Meaning | Baseline |
-|:----------|:--------|:---------|
-| $\alpha$ | Wind sensitivity exponent | 1 |
-| $\beta$ | Direct precipitation sensitivity exponent | 1 |
-
-**Interpretation:** This formulation ensures that:
-- Both wind and precipitation can independently trigger high hazard
-- The components are combined via a bounded union (saturates at 1)
-- Exponents control relative weighting and interaction
-
-### Indirect Hazard Component
-
-$$H_{\text{ind}} = H_{P, \text{ind}}$$
-
-**Current formulation:** In ITCHI v0.1, indirect hazard is purely precipitation-driven.
-
----
-
-## Final ITCHI Index
-
-The final ITCHI index combines direct and indirect components:
-
-$$\text{ITCHI} = 1 - (1 - H_{\text{dir}})^\lambda \cdot (1 - H_{\text{ind}})^\mu$$
-
-**Parameters:**
-
-| Parameter | Meaning | Baseline |
-|:----------|:--------|:---------|
-| $\lambda$ | Direct-component sensitivity exponent | 1 |
-| $\mu$ | Indirect-component sensitivity exponent | 1 |
-
-### Output Validation
-
-The final index is validated to remain bounded:
-
-$$0 \leq \text{ITCHI} \leq 1$$
-
----
-
-## Event-Level Products
-
-Given a time series of ITCHI snapshots for a single tropical cyclone event ($\text{ITCHI}_t$), two event-level aggregation products are defined:
-
-### Maximum Hazard
-
-$$\text{ITCHI}_{\max} = \max_t(\text{ITCHI}_t)$$
-
-Identifies the peak hazard experienced by each grid cell during the entire event lifecycle.
-
-### Accumulated Bounded Hazard
-
-$$\text{ITCHI}_{\text{acc}} = 1 - \prod_t(1 - \text{ITCHI}_t)$$
-
-Captures cumulative exposure while remaining bounded in $[0, 1]$. This formulation:
-- Increases with repeated cyclone passages
-- Remains bounded (never exceeds 1)
-- Reflects integrated risk over the event duration
-
----
-
-## Quality Control
-
-ITCHI outputs must satisfy the following quality-control rules:
-
-| Rule ID | Requirement |
-|:--------|:-----------|
-| QC-1 | $\text{ITCHI} \in [0, 1]$ |
-| QC-2 | $H_P, H_W, H_{\text{dir}}, H_{\text{ind}} \in [0, 1]$ |
-| QC-3 | $R_{\text{direct}, q} \leq \text{ROCLOUD}_q$ where both exist |
-| QC-4 | Exterior region receives zero ITCHI contribution |
-| QC-5 | Direct, indirect, and exterior masks are mutually disjoint |
-| QC-6 | Spatial fields preserve dimensions and coordinates |
-| QC-7 | All geometric radii are in kilometers before mask construction |
-
----
-
-## ITCHI v0.2 Extensions
-
-ITCHI v0.2 keeps the regions, masks and bounded unions of v0.1 and changes
-the precipitation and wind hazards. Both changes are opt-in in the pipeline
-(`precipitation_hazard`, `wind_model="w06_tail"`).
-
-### Precipitation: P6 ramp escalated by persistence and antecedent rain
-
-Three supports are combined, each against its own local percentiles (MSWEP
-V3.16, May–November, wet windows):
-
-| Symbol | Definition | Role |
-|:-------|:-----------|:-----|
-| $P_6(T)$ | Precipitation in $(T-6\,\mathrm{h}, T]$ | Intensity (ramp) |
-| $R_{24}(T)$ | Precipitation in $(T-24\,\mathrm{h}, T]$ | Persistence of the current event |
-| $A_{72}(T)$ | Precipitation in $(T-78\,\mathrm{h}, T-6\,\mathrm{h}]$, $A_{72}(T) = R_{72}(T-6\,\mathrm{h})$ | Antecedent wetness |
-
-$P_6$ follows two node ramps over its local percentiles, the base ramp R4 and
-an escalated ramp:
-
-| Ramp | 0 mm | $Q^6_{75}$ | $Q^6_{90}$ | $Q^6_{95}$ | $Q^6_{99}$ |
-|:--|--:|--:|--:|--:|--:|
-| $H_{\text{base}}$ (R4) | 0 | 0 | 0.25 | 0.5 | 1 |
-| $H_{\text{esc}}$ | 0 | 0 | 0.25 | 0.8 | 1 |
-
-and
-
-$$
-H_P = (1 - f)\,H_{\text{base}}(P_6) + f\,H_{\text{esc}}(P_6), \qquad
-f = f_{R24}\, f_{A72},
-$$
-
-$$
-f_{R24} = \mathrm{clip}\!\left(\frac{R_{24} - Q^{24}_{90}}{Q^{24}_{95} - Q^{24}_{90}}\right), \qquad
-f_{A72} = \mathrm{clip}\!\left(\frac{A_{72}}{Q^{72}_{75}}\right).
-$$
-
-Escalation therefore acts only from $Q^6_{90}$ upwards and is largest at
-$Q^6_{95}$ (0.5 → 0.8, the upper SIAT-style class). It is the continuous form
-of the discrete rule "P6 in P95–P99 with $R_{24} \ge$ P95 and $A_{72} \ge$ P75
-→ maximum". A missing $R_{24}$ or $A_{72}$ (first 72 h of a season) gives no
-escalation. $H_P$ is non-decreasing in $P_6$, $R_{24}$ and $A_{72}$.
-
-**Calibration.** Municipality–cyclone pairs inside the W06 (PA21) radius
-(381 929 pairs, 2000–2025; 2 % with a TC-associated declaration,
-`scripts/negativos_w06.py`). With the 6-h ramp alone, the Peirce skill score
-(PSS = POD − POFD) is 0.446, 0.533, 0.547 and 0.413 for levels ≥ 1…4. The
-empirical probability of a declaration rises with persistence and antecedent
-rain only for P6 ≥ P95 (P95–P99: 2.0 % with $R_{24}$ < P95; 4.0–10.3 % with
-$R_{24}$ ≥ P95 as $A_{72}$ increases). The escalation leaves levels 1–3
-unchanged and raises the maximum-level PSS to 0.514 (0.670 for disaster
-declarations), with POFD 0.082 (0.052 without escalation). A more frequent
-maximum was chosen deliberately: declarations under-report impacts, so part of
-the measured false detections are unreported events. The rule was selected
-among five candidates on the same pairs; cross-validation by year or storm is
-pending.
-
-### Wind: W06 profile with outer tail
-
-The W06 profile (Willoughby et al. 2006) is fitted to $V_{\max}$, latitude,
-RMW and, when available, the observed azimuthal-mean $R_{34}$ (outer decay
-length $X_1$ such that $V(\bar R_{34}) = 34$ kt). The radius is scaled by
-$s_q = \bar R_{34} / R_{\text{direct},q}$ so that $V = 34$ kt at each
-quadrant's $R_{\text{direct},q}$. With $V_{34} = 34$ kt and
-$V_{\text{out},q} = V(s_q\,R_{\text{attr},q})$:
-
-$$
-H_W =
-\begin{cases}
-h_{34} + (1 - h_{34})\,\mathrm{clip}\!\left(\dfrac{V - V_{34}}{V_{\max} - V_{34}}\right), & r \le R_{\text{direct},q} \\[10pt]
-h_{34}\,\mathrm{clip}\!\left(\dfrac{V - V_{\text{out},q}}{V_{34} - V_{\text{out},q}}\right), & R_{\text{direct},q} < r \le R_{\text{attr},q}
-\end{cases}
-$$
-
-$H_W$ is continuous at $R_{\text{direct},q}$ (value $h_{34}$) and vanishes at
-$R_{\text{attr},q}$. For $V_{\max} \le 34$ kt only the tail applies, so
-$H_W < h_{34}$. Default $h_{34} = 0.2$: below 34 kt sustained, wind damage is
-small, and the tail alone stays in the lowest SIAT-style class.
-
-### Indirect component
-
-$$
-H_{\text{ind}} = 1 - (1 - H_{W,\text{ind}})(1 - H_{P,\text{ind}})
-$$
-
-The direct component and the final index keep the v0.1 formulas.
-
-### Calibration status
-
-The escalation rule is calibrated (see above); $h_{34}$ is provisional. Both are evaluated with
-municipality–cyclone pairs inside the W06 (PA21) radius, labelled with
-TC-associated disaster declarations (`scripts/negativos_w06.py`: POD, FAR,
-POFD, Peirce skill score by hazard level).
-
-### Verification summary and open issues
-
-Full results, case studies and the list of open decisions are in
-[`verification_v02.md`](verification_v02.md). The points that affect the
-formulas above are:
-
-- **Wind tail.** With the tail down to the attribution radius (median 743 km),
-  96 % of the verification pairs get $H_W > 0$ and SIAT class 1 loses its
-  skill (PSS 0.03). Cutting the tail where $V$ falls to 17 kt keeps most of the
-  information of the wind (AUC 0.85 against 0.82 without wind) and restores
-  class 1 (PSS 0.49). Proposed for v0.3, together with $h_{34} = 0.3$.
-- **Scores for rare events.** The escalation raises PSS and SEDI at the
-  maximum level but lowers CSI, ETS and HSS; it trades false alarms for
-  detection.
-- **Relative wind normalization.** Inside $R_{	ext{direct}}$ the hazard is
-  relative to the storm's own $V_{\max}$ (as in v0.1): every storm with
-  $V_{\max} > 34$ kt reaches $H_W = 1$ at its RMW.
-
----
-
-## Current Limitations
-
-ITCHI is a research prototype. Important current limitations (v0.2) include:
-
-- **Wind profile:** v0.1 uses a modified Rankine profile; v0.2 uses W06 calibrated to the observed R34, but the extent of its outer tail is still open (see above)
-- **Climatology:** local percentiles of 6, 24 and 72 h from MSWEP V3.16 are computed by `scripts/percentiles_6h.py`; 72-h P99/P99.9 are not robust
-- **Antecedent wetness:** $A_{72}$ is antecedent rain, not soil moisture
-- **Validation:** verification against TC-associated disaster declarations exists (381 929 pairs) but the declaration–cyclone association is by date (29.8 % of declared pairs excluded), the rule was chosen on the same pairs, and confidence intervals are pending
-- **Sensitivity analysis:** Parameter sensitivity for $\alpha, \beta, \lambda, \mu$ pending formal analysis
-- **Computational efficiency:** Current implementation prioritizes transparency and modularity over optimization
-
----
-
-## Recommended Future Developments
-
-### High-Priority Methodological Items
-
-1. **Formal climatology module** — Compute $Q_{90}, Q_{95}, Q_{99}$ from regional precipitation climatologies
-2. **Precipitation alignment module** — Handle temporal misalignment between wind and precipitation fields
-3. **Real-data adapters** — Validated interfaces for MSWEP, IBTrACS, and ROCLOUD products
-4. **Sensitivity analysis** — Quantify parameter sensitivity and uncertainty propagation
-5. **Impact validation** — Compare ITCHI against independent impact datasets and disaster records
-6. **Alternative formulations** — Compare against other hazard aggregation methods
-7. **Uncertainty quantification** — Formal uncertainty framework for missing or imputed radii
-
-### Computational Optimization
-
-- Vectorization and parallelization of grid computations
-- Efficient spatial indexing and masking operations
-- Performance profiling and optimization
-
----
+The precipitation thresholds in percentiles are provisional: v0.3 replaces
+them by return periods (F1, `docs/periodos_retorno.md`). The physical
+justification of the 12 m s-1 tail cut and the municipal statistic are
+pending (`docs/plan_v0.3.md`, section 4).
 
 ## References
 
-This methodology document defines the mathematical framework, design principles, and quality standards for ITCHI v0.1. For implementation details, see the [ITCHI Core Repository](https://github.com/apereze/itchi-core).
-
-### Related Documentation
-
-- [v0.2 verification and open decisions](./verification_v02.md)
-- [Disaster declarations](./declaratorias.md)
-- [API Reference](./api.md)
-- [Workflows](./workflows.md)
-- [Examples](../examples/)
+- Willoughby, Darling & Rahn (2006): Parametric representation of the primary
+  hurricane vortex. Part II. *Mon. Wea. Rev.*, 134, 1102–1120,
+  https://doi.org/10.1175/MWR3106.1.
+- Pérez-Alarcón et al. (2021): Comparative climatology of outer tropical
+  cyclone size using radial wind profiles.
+- Beck et al. (2019): MSWEP V2 global 3-hourly 0.1° precipitation.
+- Pérez-Estrada & Dominguez (2025): A database for the outer sizes of
+  tropical cyclones over the Middle Americas (ROCLOUD).

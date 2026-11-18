@@ -1,25 +1,18 @@
 """
-Tests for scripts/casos_v021.py on a synthetic case: track, rain fields,
-percentiles and municipalities built in memory (no MSWEP, IBTrACS or
+Tests for itchi.cases and itchi.municipal on a synthetic case: track, rain
+fields, percentiles and municipalities built in memory (no MSWEP, IBTrACS or
 shapefile).
 """
 
 from __future__ import annotations
-
-import importlib.util
-import sys
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "casos_v021.py"
-_spec = importlib.util.spec_from_file_location("casos_v021", SCRIPT)
-cv = importlib.util.module_from_spec(_spec)
-sys.modules["casos_v021"] = cv
-_spec.loader.exec_module(cv)
+from itchi import cases as cv
+from itchi import municipal as mu
 
 
 def _synthetic_case(nt: int = 6):
@@ -65,57 +58,61 @@ def _synthetic_case(nt: int = 6):
 
 
 @pytest.fixture(scope="module")
-def case():
+def case(tmp_path_factory):
     track, p6, r24, a72, q6, q24, q72, pix = _synthetic_case()
     for col in cv.DEFAULT_R34_COLUMN_MAP.values():
         assert col in track
-    settings = cv.experiment_settings()
+    overlay = tmp_path_factory.mktemp("cfg") / "cola_rw06.yaml"
+    overlay.write_text("wind:\n  tail_end_wind_ms: null\n", encoding="utf-8")
+    settings = cv.experiment_settings(cv.CaseConfig(experiments={"itchi": None, "cola_rw06": str(overlay)}))
     ds = cv.compute_case_fields(track, p6, r24, a72, q6, q24, q72, settings, verbose=False)
     codes = list(pix)
-    land = cv.land_mask(pix, (p6["lat"].size, p6["lon"].size))
+    land = mu.land_mask(pix, (p6["lat"].size, p6["lon"].size))
     return dict(case="SINTETICO", ds=ds, track=track, pix=pix, codes=codes, land=land)
 
 
-def test_experiment_overlays_load() -> None:
+def test_default_experiment() -> None:
     s = cv.experiment_settings()
-    assert list(s) == list(cv.EXPERIMENTS)
-    assert s["p95"]["precip_matrix"]["p6_nodes"][-1] == "Q95"
-    assert s["ss"]["wind_hazard_scale"] == "saffir_simpson"
-    assert s["v020"]["wind_tail_end_kt"] is None
+    assert list(s) == ["itchi"]
+    assert s["itchi"]["precip_matrix"]["p6_nodes"][-1] == "Q95"
+    assert s["itchi"]["wind_tail_end_kt"] == pytest.approx(12.0 / 0.514444)
 
 
 def test_fields_shapes_and_physics(case) -> None:
     ds = case["ds"]
     assert ds["ITCHI"].dims == ("exp", "time", "lat", "lon")
     assert ds.sizes["time"] == len(case["track"])
-    v020, p95 = ds["H_P"].sel(exp="v020"), ds["H_P"].sel(exp="p95")
-    assert float((p95 - v020).min()) >= -1e-6                       # P95 nunca baja el peligro por lluvia
-    w12, v = ds["H_W"].sel(exp="w12"), ds["H_W"].sel(exp="v020")
-    assert int((w12 > 0).sum()) < int((v > 0).sum())               # el corte reduce el área de la cola
-    np.testing.assert_allclose(ds["H_P"].sel(exp="ss"), v020)       # el viento no toca la lluvia
-    # Tormenta de 45 kt (primera posición): v0.2 llega a clase 5, Saffir-Simpson a clase 2
-    assert float(ds["H_W"].sel(exp="v020").isel(time=0).max()) > 0.8
-    assert 0.2 < float(ds["H_W"].sel(exp="ss").isel(time=0).max()) <= 0.4
+    w12, w = ds["H_W"].sel(exp="itchi"), ds["H_W"].sel(exp="cola_rw06")
+    assert int((w12 > 0).sum()) < int((w > 0).sum())               # el corte en 12 m/s reduce el área de la cola
+    np.testing.assert_allclose(ds["H_P"].sel(exp="itchi"), ds["H_P"].sel(exp="cola_rw06"))   # el viento no toca la lluvia
+    # Tormenta de 45 kt (primera posición): clase 2; huracán de 100 kt (tercera): clase 5
+    assert 0.2 < float(w12.isel(time=0).max()) <= 0.4
+    assert float(w12.isel(time=2).max()) > 0.8
+    # Dentro de la región de atribución ITCHI es la unión de lluvia y viento: nunca menor que cada uno
+    region = (ds["M_direct"] | ds["M_indirect"]).values.astype(bool)
+    it = ds["ITCHI"].sel(exp="itchi").values
+    assert (it[region] - np.maximum(w12.values, ds["H_P"].sel(exp="itchi").values)[region]).min() >= -1e-6
+    assert (it[~region] == 0.0).all()
     # H_P continuo igual a H_P del pipeline donde hay región de atribución
     j = list(pd.DatetimeIndex(ds["time_all"].values)).index(pd.Timestamp(ds["time"].values[2]))
     reg = (ds["M_direct"].isel(time=2) | ds["M_indirect"].isel(time=2)).values.astype(bool)
-    np.testing.assert_allclose(ds["H_P_cont_P99"].isel(time_all=j).values[reg],
-                               ds["H_P"].sel(exp="v020").isel(time=2).values[reg], atol=1e-6)
+    np.testing.assert_allclose(ds["H_P_cont"].sel(exp="itchi").isel(time_all=j).values[reg],
+                               ds["H_P"].sel(exp="itchi").isel(time=2).values[reg], atol=1e-6)
 
 
 def test_municipal_values(case) -> None:
     ds, pix, codes = case["ds"], case["pix"], case["codes"]
-    f = ds["ITCHI"].sel(exp="v020").values
-    mx = cv.municipal_values(f, pix, codes, "max")
-    mean = cv.municipal_values(f, pix, codes, "mean")
-    p90 = cv.municipal_values(f, pix, codes, "p90")
+    f = ds["ITCHI"].sel(exp="itchi").values
+    mx = mu.municipal_values(f, pix, codes, "max")
+    mean = mu.municipal_values(f, pix, codes, "mean")
+    p90 = mu.municipal_values(f, pix, codes, "p90")
     assert mx.shape == (len(codes), ds.sizes["time"])
-    assert np.all(mx >= p90 - 1e-9) and np.all(p90 >= mean - 1e-6)
+    assert np.all(mx >= p90 - 1e-9) and np.all(mx >= mean - 1e-6)      # el máximo acota a los demás estadísticos
     k = codes.index("10001")
     flat = pix["10001"][0]
     np.testing.assert_allclose(mx[k], f.reshape(f.shape[0], -1)[:, flat].max(axis=1))
     # pintar y volver a leer da el mismo valor municipal
-    painted = cv.paint_municipal(mx[:, 2], pix, codes, f.shape[1:])
+    painted = mu.paint_municipal(mx[:, 2], pix, codes, f.shape[1:])
     np.testing.assert_allclose(painted.ravel()[flat], mx[k, 2])
 
 
@@ -167,19 +164,19 @@ def test_tabla_ordinal_and_find_municipio(case) -> None:
     tab = cv.tabla_ordinal(case, decl_codes={"10001", "10002"})
     assert set(tab["clase"]) == set(range(6))
     assert (tab["con_declaratoria"] <= tab["municipios"]).all()
-    assert int(tab.loc[tab["exp"] == cv.label("v020"), "con_declaratoria"].sum()) <= 2
+    assert int(tab.loc[tab["exp"] == "itchi", "con_declaratoria"].sum()) <= 2
     gdf = pd.DataFrame({"CVEGEO": ["12011", "21071", "12001"], "NOMGEO": ["Atoyac de Álvarez", "Huauchinango", "Acapulco de Juárez"]})
-    assert cv.find_municipio(gdf, "atoyac de alvarez", "12") == "12011"
-    assert cv.find_municipio(gdf, "Huauchinango", 21) == "21071"
+    assert mu.find_municipio(gdf, "atoyac de alvarez", "12") == "12011"
+    assert mu.find_municipio(gdf, "Huauchinango", 21) == "21071"
     with pytest.raises(ValueError):
-        cv.find_municipio(gdf, "Atoyac de Álvarez", "14")
+        mu.find_municipio(gdf, "Atoyac de Álvarez", "14")
     # acento mal decodificado (UTF-8 leído como latin-1) y respaldo por CVEGEO
     bad = gdf.assign(NOMGEO=gdf["NOMGEO"].map(lambda x: x.encode("utf-8").decode("latin-1")))
     assert "Ã" in bad["NOMGEO"].iloc[0]
-    assert cv.find_municipio(bad, "Atoyac de Álvarez", "12") == "12011"
+    assert mu.find_municipio(bad, "Atoyac de Álvarez", "12") == "12011"
     other = gdf.assign(NOMGEO=["Atoyac", "Huauchinango", "Acapulco de Juárez"])
     with pytest.warns(UserWarning):
-        assert cv.find_municipio(other, "Atoyac de Álvarez", "12", cvegeo="12011") == "12011"
+        assert mu.find_municipio(other, "Atoyac de Álvarez", "12", cvegeo="12011") == "12011"
 
 
 def test_declaratoria_inicio() -> None:

@@ -23,9 +23,9 @@ The package should avoid mixing:
 |---|---|
 | Scientific formulas | `src/itchi/*.py` |
 | Input/output | `io.py` |
-| Event orchestration | `compiler.py` |
+| Case studies and municipalities | `cases.py`, `municipal.py` |
 | Validation | `quality_control.py` |
-| Examples | `examples/` |
+| Command-line workflows | `scripts/` |
 | Exploratory validation | `notebooks/` |
 | Methodological explanation | `docs/` |
 
@@ -191,7 +191,7 @@ docs: update methodology after R_direct implementation
 ```
 
 ```text
-test: add compiler xarray tests
+test: add case-study municipal tests
 ```
 
 ---
@@ -276,7 +276,7 @@ Every new module should have a matching test file.
 | `src/itchi/precipitation.py` | `tests/test_precipitation.py` |
 | `src/itchi/masks.py` | `tests/test_masks.py` |
 | `src/itchi/pipeline.py` | `tests/test_pipeline.py` |
-| `src/itchi/compiler.py` | `tests/test_compiler.py` |
+| `src/itchi/cases.py` | `tests/test_cases.py` |
 
 Tests should cover:
 
@@ -313,10 +313,10 @@ Recommended notebooks:
 
 | Notebook | Purpose |
 |---|---|
-| `00_smoke_test_synthetic.ipynb` | End-to-end synthetic validation |
-| `01_single_snapshot_synthetic.ipynb` | Single-snapshot diagnostics |
-| `02_single_event_synthetic.ipynb` | Multi-snapshot event diagnostics |
-| `03_single_event_real_case.ipynb` | First real-case workflow |
+| `notebooks/v03/10_periodos_retorno.ipynb` | F1: rainfall return periods, figures and reading guide |
+
+Each v0.3 experiment gets a notebook in `notebooks/v03/` with figures and a
+reading guide; earlier notebooks are kept in the tag `v0.2.2`.
 
 Before committing notebooks:
 
@@ -452,7 +452,7 @@ feature/add-climatology
 fix/rocloud-missing-values
 docs/update-methodology
 test/add-wind-xarray-tests
-refactor/compiler-output-structure
+refactor/catalog-output-structure
 ```
 
 Avoid working directly on `main` for major changes.
@@ -485,12 +485,6 @@ Then verify:
 The following modules are planned but not yet required for the core synthetic
 workflow:
 
-| Module | Purpose |
-|---|---|
-| `climatology.py` | Compute or load Q90/Q95/Q99 fields |
-| `precipitation_snapshots.py` | Align precipitation snapshots to cyclone times |
-| `adapters/ibtracs.py` | Real-data adapter for IBTrACS |
-| `adapters/mswep.py` | Real-data adapter for MSWEP |
-| `adapters/rocloud.py` | Real-data adapter for ROCLOUD files |
-
-These should be added only after the current core API remains stable.
+See `docs/plan_v0.3.md`: F2 (catalogue of physical states under every
+cyclone, 2000–2025), F3 (hazard schemes on the catalogue), F4 (ITCHI
+climatology) and F5 (AIFS forecasts by lead time).

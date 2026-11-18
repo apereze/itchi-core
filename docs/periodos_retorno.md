@@ -66,7 +66,7 @@ temporada), que con la GPD solo darían «< 0.33 años».
 | `src/itchi/return_periods.py` | Funciones NumPy: sumas móviles, picos independientes, GEV, GPD, conversiones |
 | `scripts/periodos_retorno.py` | Lee una vez los 26 años y escribe `data/processed/mswep_v3_return_periods_may_nov.nc` |
 | `scripts/figuras_retorno.py` | Figuras R1–R5 y tabla resumen |
-| `notebooks/third test/10_periodos_retorno.ipynb` | Figuras con la guía de lectura |
+| `notebooks/v03/10_periodos_retorno.ipynb` | Figuras con la guía de lectura |
 
 ```bat
 conda activate itchi

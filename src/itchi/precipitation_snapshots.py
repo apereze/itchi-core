@@ -1,8 +1,8 @@
 """
 Precipitation snapshot utilities for ITCHI.
 
-ITCHI v0.1 treats precipitation as a snapshot field aligned with tropical
-cyclone synoptic times. This module provides utilities to select, filter and
+Precipitation enters ITCHI as a field aligned with tropical cyclone
+synoptic times (the 6-h accumulation that ends at T). This module provides utilities to select, filter and
 prepare precipitation snapshots without assuming temporal accumulation.
 
 Important

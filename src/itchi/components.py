@@ -1,22 +1,19 @@
 """
 Hazard components for ITCHI.
 
-This module builds the direct and indirect hazard components used by
-ITCHI v0.1.
+This module builds the direct and indirect hazard components of ITCHI.
 
 The direct component combines wind hazard and direct precipitation hazard
-inside R34 using a bounded union formulation.
+inside the direct radius (R34) using a bounded union formulation.
 
-The indirect component is defined as precipitation hazard outside R34 but
-inside ROCLOUD.
-
-ITCHI v0.2 (optional): the wind hazard has an outer tail (W06 profile, see
-parametric_radii.compute_w06_wind_hazard_with_tail) and the indirect
-component becomes a bounded union of indirect wind and precipitation:
+The indirect region lies outside the direct radius but inside the
+attribution radius. The wind hazard has an outer tail (W06 profile, see
+parametric_radii.compute_w06_wind_hazard_with_tail), so the indirect
+component is a bounded union of indirect wind and precipitation:
 
     H_ind = 1 - (1 - H_Wind) * (1 - H_Pind)
 
-Without wind_hazard_indirect the v0.1 definitions are kept unchanged.
+Without wind_hazard_indirect (no wind tail) H_ind = H_Pind.
 """
 
 from __future__ import annotations
@@ -147,7 +144,7 @@ def compute_wind_hazard(
     """
     Compute wind hazard inside the direct region.
 
-    Wind hazard is active only inside R34 in ITCHI v0.1.
+    Wind hazard restricted to the direct region.
 
     Parameters
     ----------
@@ -229,7 +226,7 @@ def compute_indirect_component(
     """
     Compute the indirect hazard component H_ind.
 
-    In ITCHI v0.1, the indirect component is defined as:
+    Without indirect wind hazard:
 
         H_ind = H_Pind
 
@@ -242,7 +239,7 @@ def compute_indirect_component(
     clip_max : float, default=1.0
         Maximum allowed value.
     indirect_wind_hazard : numpy.ndarray, xarray.DataArray or None
-        ITCHI v0.2 wind-tail hazard H_Wind in the indirect region. If given,
+        Wind-tail hazard H_Wind in the indirect region. If given,
         H_ind = 1 - (1 - H_Wind) * (1 - H_Pind).
 
     Returns
@@ -287,8 +284,8 @@ def compute_hazard_components(
     beta : float, default=1.0
         Weight/exponent for direct precipitation hazard in H_dir.
     wind_hazard_indirect : numpy.ndarray, xarray.DataArray or None
-        ITCHI v0.2: wind hazard (with outer tail) used in the indirect region.
-        None keeps v0.1 (wind only inside the direct region).
+        Wind hazard (with outer tail) used in the indirect region (the
+        pipeline passes it). None: wind only inside the direct region.
 
     Returns
     -------

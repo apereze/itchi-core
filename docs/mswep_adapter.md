@@ -6,7 +6,7 @@ This document describes the MSWEP NetCDF adapter implemented in:
 src/itchi/mswep.py
 ```
 
-The adapter converts MSWEP-like NetCDF files into precipitation snapshot inputs compatible with ITCHI v0.1.
+The adapter reads MSWEP-like NetCDF files and prepares precipitation fields for ITCHI. The 6-h accumulations of MSWEP V3 used by the current scheme are built by `scripts/mswep_v3_6h_accum.py`.
 
 ---
 
@@ -128,7 +128,7 @@ from itchi.mswep import get_mswep_lon_lat
 lon, lat = get_mswep_lon_lat(precipitation)
 ```
 
-This is useful for `itchi.pipeline.compute_itchi_snapshot_from_grid`, which expects spatial grids compatible with the precipitation field.
+This is useful for `itchi.pipeline.compute_itchi_snapshot`, which expects lon/lat grids compatible with the precipitation field.
 
 ---
 

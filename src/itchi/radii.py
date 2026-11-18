@@ -338,7 +338,7 @@ def resolve_attribution_radius(
 
 
 # ============================================================
-# ITCHI v0.2: attribution radius with the W06 outer radius
+# Attribution radius with the W06 outer radius
 # ============================================================
 
 W06_ATTRIBUTION_MODES: tuple[str, ...] = ("never", "fallback", "floor", "always")
@@ -389,10 +389,10 @@ def resolve_attribution_radius_with_w06(
     Rules by quadrant (ROCLOUD <= 0 or missing = no detection):
 
     - "never":    ROCLOUD_q; missing quadrants filled with the mean of the
-                  valid ones (v0.1, ``resolve_attribution_radius``).
+                  valid ones (``resolve_attribution_radius``).
     - "fallback": R_W06_q where ROCLOUD_q is missing, otherwise ROCLOUD_q.
     - "floor":    R_W06_q where ROCLOUD_q is missing or smaller than R_W06_q,
-                  otherwise ROCLOUD_q (ITCHI v0.2 default).
+                  otherwise ROCLOUD_q (default).
     - "always":   R_W06_q.
 
     In every mode the result is raised to R_direct_q where it is smaller, so

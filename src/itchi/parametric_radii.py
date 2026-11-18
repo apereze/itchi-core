@@ -1,23 +1,12 @@
 """
-Parametric cyclone radii for ITCHI.
+Parametric cyclone radii and W06 wind for ITCHI.
 
-This module estimates R34 and an outer cyclone radius from best-track data
-with the W06 profile, following PA21, so that ITCHI can run without an
-external outer-radius database.
-
-Integration with the ITCHI pipeline (no changes to existing modules)
-----------------------------------------------------------------------
-- Outer radius -> attribution radius: ``build_parametric_rocloud_record``
-  returns a ROCLOUD-compatible record (symmetric, km) accepted by
-  ``snapshot_inputs.build_snapshot_input_from_records``.
-- Parametric R34 -> direct-radius fallback: pass it as
-  ``fallback_direct_radius_km``; observed R34 keeps priority in
-  ``radii.resolve_direct_radius``.
-- Optional W06 wind field -> ``compute_w06_wind_hazard``, passed to the
-  pipeline as ``wind_hazard_normalized``.
-- ITCHI v0.2 wind with outer tail -> ``compute_w06_wind_hazard_with_tail``
-  (used by the pipeline with ``wind_model="w06_tail"``).
+Estimates R34 and the outer radius R_W06 from best-track data with the
+Willoughby et al. (2006) profile (W06), following Pérez-Alarcón et al. (2021,
+PA21), and the absolute wind hazard with its tail
+(``compute_w06_wind_hazard_with_tail``, used by pipeline.compute_itchi_snapshot).
 """
+
 
 from __future__ import annotations
 
@@ -29,14 +18,9 @@ import numpy as np
 import pandas as pd
 
 from itchi.constants import QUADRANTS, TROPICAL_STORM_WIND_KT
-from itchi.rocloud import DEFAULT_ROCLOUD_COLUMN_MAP
 from itchi.tracks import DEFAULT_R34_COLUMN_MAP
 from itchi.units import convert_radius_to_km
-from itchi.wind import (
-    normalize_wind_hazard,
-    normalize_wind_hazard_absolute,
-    normalize_wind_hazard_with_tail,
-)
+from itchi.wind import normalize_wind_hazard_absolute
 from itchi.wind_profiles import (
     KNOT_TO_MS,
     V_OUTER_PA21_MS,
@@ -51,7 +35,7 @@ DEFAULT_THRESHOLDS_MS: dict[str, float] = {
     "r34_km": V_R34_MS,
 }
 
-# R_W06 used by ITCHI v0.2 (compute_itchi_snapshot_v02): W06 profile with the
+# R_W06 used by ITCHI (pipeline.compute_itchi_snapshot): W06 profile with the
 # PA21 configuration (empirical Rmax, no R34 calibration), radius where
 # V = 2 m s-1. Same as the "pa21_r2_km" radius of the v0.2 verification.
 # Mirrors parametric_radii.r_w06 in configs/default.yaml.
@@ -239,39 +223,6 @@ def add_parametric_radii(
     return result
 
 
-def build_parametric_rocloud_record(
-    track_record: Mapping[str, Any] | pd.Series,
-    outer_radius_column: str = "w06_r_outer_km",
-    column_map: Mapping[str, str] = DEFAULT_ROCLOUD_COLUMN_MAP,
-) -> dict[str, Any]:
-    """
-    Build a symmetric ROCLOUD-compatible record (km) from the W06 outer radius.
-
-    The record is accepted as ``rocloud_record`` by
-    ``snapshot_inputs.build_snapshot_input_from_records`` with
-    ``rocloud_unit="km"``.
-    """
-    radius = float(track_record[outer_radius_column])
-    record: dict[str, Any] = {column_map[q]: radius for q in QUADRANTS}
-
-    for key in ("storm_id", "time"):
-        if key in track_record:
-            record[key] = track_record[key]
-
-    return record
-
-
-def parametric_direct_fallback_km(
-    track_record: Mapping[str, Any] | pd.Series,
-    r34_column: str = "w06_r34_km",
-) -> float | None:
-    """
-    Return the parametric R34 (km) for ``fallback_direct_radius_km`` or None.
-    """
-    value = float(track_record.get(r34_column, np.nan))
-    return value if np.isfinite(value) else None
-
-
 def compute_w06_reference_radii(
     vmax_kt: float,
     lat: float,
@@ -337,40 +288,6 @@ def compute_w06_reference_radii(
     }
 
 
-def compute_w06_wind_hazard(
-    radius_km: np.ndarray,
-    vmax_kt: float,
-    lat: float,
-    rmw_km: float | None = None,
-    x1_km: float | None = None,
-    reference_wind_kt: float = TROPICAL_STORM_WIND_KT,
-    below_threshold_mode: str = "relative_to_vmax",
-    **profile_kwargs: Any,
-) -> np.ndarray:
-    """
-    Normalized wind hazard V* from the W06 profile for one track record.
-
-    Unlike the modified Rankine profile in ``wind.py``, a W06 profile
-    calibrated to observed R34 satisfies V(R34) = 34 kt, so V* vanishes
-    exactly at the direct-region boundary.
-    """
-    profile = Willoughby2006Profile(
-        float(vmax_kt) * KNOT_TO_MS,
-        float(lat),
-        rmw_km,
-        x1_km=x1_km,
-        **profile_kwargs,
-    )
-    wind_kt = profile(np.asarray(radius_km, dtype=float)) / KNOT_TO_MS
-
-    return normalize_wind_hazard(
-        wind_kt=wind_kt,
-        vmax_kt=float(vmax_kt),
-        reference_wind_kt=reference_wind_kt,
-        below_threshold_mode=below_threshold_mode,
-    )
-
-
 def compute_w06_wind_hazard_with_tail(
     radius_km: Any,
     direct_radius_km: Any,
@@ -380,15 +297,13 @@ def compute_w06_wind_hazard_with_tail(
     rmw_km: float | None = None,
     r34_mean_km: float | None = None,
     x1_km: float | None = None,
-    h34: float = 0.2,
     reference_wind_kt: float = TROPICAL_STORM_WIND_KT,
     tail_end_wind_kt: float | None = None,
-    hazard_scale: str = "vmax",
     absolute_nodes: tuple[tuple[float, float], ...] | None = None,
     **profile_kwargs: Any,
 ) -> dict[str, Any]:
     """
-    ITCHI v0.2 wind hazard from the W06 profile, with an outer tail.
+    ITCHI wind hazard from the W06 profile, with an outer tail.
 
     1. W06 profile for (vmax, lat, rmw). If r34_mean_km (observed azimuthal
        mean R34, km) is given and x1_km is None, X1 is fitted so that
@@ -397,18 +312,14 @@ def compute_w06_wind_hazard_with_tail(
        so V = 34 kt at each quadrant's R_direct_q (only with a calibrated
        profile; s = 1 otherwise).
     3. V_out = V(s * R_attr_q) is the wind at the tail-end radius R_attr_q
-       (R_W06_q in compute_itchi_snapshot_v02). With tail_end_wind_kt,
+       (R_W06_q in pipeline.compute_itchi_snapshot). With tail_end_wind_kt,
        V_out = max(V(s * R_attr_q), tail_end_wind_kt): the tail is cut at
        that wind speed and never extends beyond R_attr_q.
-    4. hazard_scale="vmax" (v0.2, wind.normalize_wind_hazard_with_tail):
-       inside R_direct_q, H_W = h34 + (1 - h34)(V - 34)/(Vmax - 34); outside,
-       H_W = h34 (V - V_out)/(34 - V_out), zero at R_attr_q.
-       hazard_scale="saffir_simpson" (v0.2.1 proposal,
-       wind.normalize_wind_hazard_absolute): H_W from absolute wind nodes
-       (absolute_nodes; default constants.SAFFIR_SIMPSON_HAZARD_NODES), same
-       tail below 34 kt with h34 = hazard of the first node; h34 is not
-       used, and Vmax only to fill the eye (r <= RMW takes the hazard of
-       Vmax, as the eyewall crosses the cell within the 6-h window).
+    4. H_W from absolute wind nodes homologated with Saffir-Simpson
+       (wind.normalize_wind_hazard_absolute; absolute_nodes, default
+       constants.SAFFIR_SIMPSON_HAZARD_NODES), with the tail below 34 kt.
+       Vmax only fills the eye: r <= RMW takes the hazard of Vmax, as the
+       eyewall crosses the cell within the 6-h window.
 
     The direct/indirect/exterior masks are applied later by the pipeline.
 
@@ -425,16 +336,11 @@ def compute_w06_wind_hazard_with_tail(
         Observed azimuthal-mean R34 (km) for calibration.
     x1_km : float or None
         Explicit X1 (km); disables calibration.
-    h34 : float, default=0.2
-        Hazard at the 34-kt radius.
     reference_wind_kt : float, default=34.0
         Tropical-storm-force threshold.
     tail_end_wind_kt : float or None, default=None
         Optional wind speed (kt) at which the tail ends, e.g. 17 kt; must be
         below reference_wind_kt. None keeps the tail down to R_attr_q.
-    hazard_scale : {"vmax", "saffir_simpson"}, default="vmax"
-        Normalization of the wind: relative to the storm Vmax (v0.2) or
-        absolute, homologated with the Saffir-Simpson scale (v0.2.1).
     absolute_nodes : tuple of (wind_kt, hazard) or None, default=None
         Nodes of the absolute scale; None uses SAFFIR_SIMPSON_HAZARD_NODES.
     **profile_kwargs : Any
@@ -444,10 +350,8 @@ def compute_w06_wind_hazard_with_tail(
     -------
     dict[str, Any]
         "H_W" (hazard), "wind_kt" (W06 wind), "outer_wind_kt", "x1_km",
-        "x1_calibrated", "radius_scale" and "hazard_scale".
+        "x1_calibrated" and "radius_scale".
     """
-    if hazard_scale not in {"vmax", "saffir_simpson"}:
-        raise ValueError(f"hazard_scale must be 'vmax' or 'saffir_simpson': {hazard_scale!r}")
     if tail_end_wind_kt is not None and not 0.0 <= float(tail_end_wind_kt) < reference_wind_kt:
         raise ValueError(
             f"tail_end_wind_kt must be in [0, {reference_wind_kt}). Received: {tail_end_wind_kt}"
@@ -484,28 +388,17 @@ def compute_w06_wind_hazard_with_tail(
     outer_kt = profile(r_att * scale) / KNOT_TO_MS
     if tail_end_wind_kt is not None:
         outer_kt = np.maximum(outer_kt, float(tail_end_wind_kt))
-    direct = r <= r_dir
 
-    if hazard_scale == "saffir_simpson":
-        # Eye: inside the RMW the hazard is that of Vmax (the eyewall crosses
-        # the cell within the 6-h window); otherwise the calm eye would read
-        # as no hazard. The returned wind_kt keeps the physical profile.
-        rmax_km = float(np.asarray(profile.rmax, dtype=float).ravel()[0])
-        wind_for_hazard = np.where(r * scale <= rmax_km, float(vmax_kt), wind_kt)
-        hazard = normalize_wind_hazard_absolute(
-            wind_kt=wind_for_hazard,
-            outer_wind_kt=outer_kt,
-            nodes=absolute_nodes,
-        )
-    else:
-        hazard = normalize_wind_hazard_with_tail(
-            wind_kt=wind_kt,
-            vmax_kt=float(vmax_kt),
-            direct_mask=direct,
-            outer_wind_kt=outer_kt,
-            h34=h34,
-            reference_wind_kt=reference_wind_kt,
-        )
+    # Eye: inside the RMW the hazard is that of Vmax (the eyewall crosses
+    # the cell within the 6-h window); otherwise the calm eye would read
+    # as no hazard. The returned wind_kt keeps the physical profile.
+    rmax_km = float(np.asarray(profile.rmax, dtype=float).ravel()[0])
+    wind_for_hazard = np.where(r * scale <= rmax_km, float(vmax_kt), wind_kt)
+    hazard = normalize_wind_hazard_absolute(
+        wind_kt=wind_for_hazard,
+        outer_wind_kt=outer_kt,
+        nodes=absolute_nodes,
+    )
 
     def _wrap(values: np.ndarray) -> Any:
         if template is None:
@@ -519,5 +412,4 @@ def compute_w06_wind_hazard_with_tail(
         "x1_km": float(profile.x1[0]),
         "x1_calibrated": calibrated,
         "radius_scale": _wrap(scale),
-        "hazard_scale": hazard_scale,
     }

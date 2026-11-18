@@ -1,43 +1,26 @@
 """
-ITCHI-CORE · Avance v0.2.1: casos de estudio en malla y por municipio
+ITCHI on case studies, on the grid and by municipality.
 
-Calcula ITCHI con compute_itchi_snapshot_v02 en cada posición de la
-trayectoria que puede afectar a México, para los experimentos de
-configs/experiments/v021/, y lo agrega por municipio. Lo usan los notebooks
-12 (lluvia: P99 contra P95), 13 (viento: v0.2.0 contra Saffir-Simpson) y
-14 (deslizamientos y anticipación) de notebooks/third test/.
+For a tropical cyclone of the catalogue (CASES) it
 
-Experimentos (overlays sobre configs/default.yaml):
+1. reads the IBTrACS track with observed R34, the W06 radii (PA21) and ROCLOUD
+   (load_track);
+2. keeps the positions whose attribution region (ROCLOUD with R_W06 floor,
+   largest quadrant) reaches a land cell of Mexico (select_positions);
+3. reads P6, R24 and A72 of MSWEP V3 and the 6/24/72-h percentiles;
+4. computes ITCHI with pipeline.compute_itchi_snapshot at every position for
+   each experiment (by default only the configuration of configs/default.yaml)
+   and the continuous H_P at every 6-h time (compute_case_fields);
+5. aggregates by municipality (itchi.municipal) and summarises: classes,
+   ordinal check against the declaratorias, lead time before an event.
 
-    v020    v0.2.0: matriz v0.2 (máximo en P99), cola hasta R_W06, viento / Vmax
-    p95     máximo de lluvia en el P95 de 6 h (escalada R24, A72 recorrida a P90)
-    w12     cola de viento cortada en 12 m/s (viento todavía / Vmax)
-    ss      propuesta v0.2.1: cola en 12 m/s y viento absoluto Saffir-Simpson
-    p95ss   P95 y Saffir-Simpson juntos
-
-Unidad de cálculo. Malla MSWEP de 0.1° recortada a MEXICO_BOX. Se conservan
-las posiciones cuya región de atribución (ROCLOUD con piso R_W06, el radio
-mayor de los cuatro cuadrantes) alcanza algún píxel terrestre de México.
-
-Valor municipal. Estadístico de ITCHI sobre los píxeles cuyo centro cae en el
-municipio (itchi.declaratorias_6h.municipio_pixels; un municipio sin centros
-toma el píxel más cercano a su punto representativo). Por defecto el máximo,
-como en los notebooks 05–08 y el Bloque 1.
-
-Salida (caché): outputs/diagnostics/avance_v021/<caso>.nc, que la segunda
-corrida lee sin recalcular.
-
-Ejecutar desde scripts/ (Anaconda Prompt, entorno itchi):
-    python casos_v021.py                       # todos los casos
-    python casos_v021.py --casos ODILE2014 MANUEL2013 --forzar
+Results are cached as NetCDF in CaseConfig.cache_dir (load_or_compute).
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 import re
-import sys
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -47,24 +30,27 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-try:
-    import itchi  # noqa: F401
-except ModuleNotFoundError:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
 from itchi.climatology import load_percentile_climatology
-from itchi.config import get_project_root, itchi_v02_settings_from_config, load_experiment_config
+from itchi.config import get_project_root, itchi_settings_from_config, load_default_config, load_experiment_config
 from itchi.constants import QUADRANTS
+from itchi.ibtracs import _decode_text_sequence, get_ibtracs_storm_ids, ibtracs_to_track_dataframe, read_ibtracs_dataset
+from itchi.municipal import land_mask, load_municipalities, municipal_values
+from itchi.parametric_radii import add_parametric_radii
 from itchi.plotting import classify_itchi_to_siat_levels
-from itchi.precipitation import compute_antecedent_precipitation, compute_precipitation_hazard_from_spec
-from itchi.rocloud import DEFAULT_ROCLOUD_COLUMN_MAP
-from itchi.tracks import DEFAULT_R34_COLUMN_MAP
+from itchi.precipitation import compute_antecedent_precipitation, compute_precipitation_matrix_hazard
+from itchi.rocloud import DEFAULT_ROCLOUD_COLUMN_MAP, ROCLOUD_TEXT_COLUMNS, standardize_rocloud_text_dataframe
+from itchi.tracks import DEFAULT_R34_COLUMN_MAP, filter_synoptic_times
+from itchi.units import NAUTICAL_MILE_TO_KM
+from itchi.wind_profiles import V_R34_MS
 
 ROOT = get_project_root()
 EARTH_RADIUS_KM = 6371.0
+V_OUTER_MS = 2.0                        # R_W06: W06 wind = 2 m/s (PA21)
+ROC_COLS = [DEFAULT_ROCLOUD_COLUMN_MAP[q] for q in QUADRANTS]
+R34_COLS = [DEFAULT_R34_COLUMN_MAP[q] for q in QUADRANTS]
 
 # ============================================================================
-# CONFIGURACIÓN
+# CATÁLOGO
 # ============================================================================
 
 # atcf: identificador del ciclón en ROCLOUD y en las declaratorias (CT_pico)
@@ -108,63 +94,54 @@ def t_event_utc(case: str) -> pd.Timestamp:
     d = DESLIZAMIENTOS[case]
     return pd.Timestamp(d["t_local"]) - pd.Timedelta(hours=d["utc_offset_h"])
 
-
-# etiqueta corta (NetCDF) -> (nombre en figuras, overlay)
-EXPERIMENTS: dict[str, tuple[str, str]] = {
-    "v020": ("v0.2.0", "v020.yaml"),
-    "p95": ("P95 máximo", "p95.yaml"),
-    "w12": ("corte 12 m/s", "w12.yaml"),
-    "ss": ("v0.2.1 Saffir-Simpson", "ss.yaml"),
-    "p95ss": ("P95 + Saffir-Simpson", "p95_ss.yaml"),
-}
-# variantes de lluvia (para H_P continuo, sin necesidad de posición del ciclón)
-PRECIP_VARIANTS = {"P99": "v020", "P95": "p95"}
-
 # Recorte de la malla: México con 1° de margen
 MEXICO_BOX = dict(lon_min=-119.0, lon_max=-85.0, lat_min=13.5, lat_max=33.5)
 
 
 def local_path(path) -> Path:
-    # "D:/..." -> "/mnt/d/..." en WSL/Linux; sin cambios en Windows
+    """"D:/..." -> "/mnt/d/..." en WSL/Linux; sin cambios en Windows; relativas a la raíz del repositorio."""
     s = str(path).replace("\\", "/")
     if os.name != "nt" and re.match(r"^[A-Za-z]:/", s):
         return Path(f"/mnt/{s[0].lower()}") / s[3:]
-    return Path(s)
+    p = Path(s)
+    return p if p.is_absolute() or re.match(r"^[A-Za-z]:/", s) else ROOT / p
+
+
+def _cfg_value(*keys):
+    node = load_default_config()
+    for k in keys:
+        node = node[k]
+    return node
 
 
 @dataclass
-class ConfigV021:
-    mswep_6h_dir: Path = local_path("D:/MSWEP_V316_6H")
+class CaseConfig:
+    """Rutas y opciones de los casos (por defecto, las de configs/default.yaml)."""
+
+    mswep_6h_dir: Path = field(default_factory=lambda: local_path(_cfg_value("precipitation", "accumulations_dir")))
     clim: dict = field(default_factory=lambda: {
-        d: ROOT / "data" / "processed" / f"mswep_v3_{d}h_percentiles_may_nov.nc" for d in (6, 24, 72)})
-    clim_var: str = "p_wet_raw"
-    tracks_dir: Path = ROOT / "data" / "raw" / "tracks"
-    rocloud_dir: Path = ROOT / "data" / "external" / "Rocloud"
-    mun_shp: Path = ROOT / "data" / "external" / "mun23gw" / "mun23gw.shp"
-    decl_file: Path = ROOT / "outputs" / "diagnostics" / "declaratorias_6h" / "declaratorias_ct_eventos.csv"
-    experiments_dir: Path = ROOT / "configs" / "experiments" / "v021"
-    cache_dir: Path = ROOT / "outputs" / "diagnostics" / "avance_v021"
-    fig_dir: Path = ROOT / "outputs" / "figures" / "avance_v021"
+        d: local_path(_cfg_value("precipitation", f"climatology_{d}h")) for d in (6, 24, 72)})
+    clim_var: str = field(default_factory=lambda: _cfg_value("precipitation", "climatology_variable"))
+    tracks_dir: Path = field(default_factory=lambda: local_path(_cfg_value("paths", "tracks")))
+    rocloud_dir: Path = field(default_factory=lambda: local_path(_cfg_value("paths", "rocloud")))
+    mun_shp: Path = field(default_factory=lambda: local_path(_cfg_value("paths", "municipalities")))
+    decl_file: Path = field(default_factory=lambda: local_path(_cfg_value("paths", "declaratorias")))
+    cache_dir: Path = field(default_factory=lambda: local_path(_cfg_value("outputs", "cases")))
+    fig_dir: Path = field(default_factory=lambda: local_path(_cfg_value("outputs", "figures")) / "casos")
+    # experimento -> overlay (None = configs/default.yaml)
+    experiments: dict = field(default_factory=lambda: {"itchi": None})
     box: dict = field(default_factory=lambda: dict(MEXICO_BOX))
-    # H_P continuo: pasos de 6 h antes de la primera y después de la última posición
+    # H_P continuo: horas antes de la primera y después de la última posición
     hp_pad_before_h: int = 48
     hp_pad_after_h: int = 72
     municipal_stat: str = "max"            # "max" | "mean" | "p90"
 
 
-# ============================================================================
-# EXPERIMENTOS
-# ============================================================================
-
-
-def experiment_settings(cfg: ConfigV021 = ConfigV021()) -> dict[str, dict]:
-    """Argumentos de compute_itchi_snapshot_v02 de cada experimento."""
-    return {tag: itchi_v02_settings_from_config(load_experiment_config(cfg.experiments_dir / f))
-            for tag, (_, f) in EXPERIMENTS.items()}
-
-
-def label(tag: str) -> str:
-    return EXPERIMENTS[tag][0]
+def experiment_settings(cfg: CaseConfig | None = None) -> dict[str, dict]:
+    """Argumentos de compute_itchi_snapshot de cada experimento."""
+    cfg = CaseConfig() if cfg is None else cfg
+    return {tag: itchi_settings_from_config(None if f is None else load_experiment_config(local_path(f)))
+            for tag, f in cfg.experiments.items()}
 
 
 # ============================================================================
@@ -172,14 +149,46 @@ def label(tag: str) -> str:
 # ============================================================================
 
 
-def load_track(case: str, cfg: ConfigV021 = ConfigV021()) -> pd.DataFrame:
-    """Trayectoria sinóptica IBTrACS con R34, radios W06 PA21 y ROCLOUD (notebooks 05–08)."""
-    import itchi.itchi_size_helpers as H
+def read_rocloud_csv(path: str | Path) -> pd.DataFrame:
+    """ROCLOUD plano (17 columnas, sin encabezado): 0 = sin detección; MWS en km/h."""
+    raw = pd.read_csv(path, header=None, names=list(ROCLOUD_TEXT_COLUMNS), na_values=[-9999])
+    df = standardize_rocloud_text_dataframe(raw)
+    df[ROC_COLS] = df[ROC_COLS].where(df[ROC_COLS] > 0)
+    df["vmax_kt_rocloud"] = df.pop("vmax_kt") / 1.852
+    return df
 
+
+def find_ibtracs_sid(dataset, name: str, season: int) -> str:
+    sids = np.asarray(get_ibtracs_storm_ids(dataset))
+    names = np.asarray(_decode_text_sequence(dataset["name"].values))
+    seasons = np.asarray(dataset["season"].values).astype(int)
+    match = sids[(names == name) & (seasons == season)]
+    if match.size != 1:
+        raise ValueError(f"{name} {season}: coincidencias {match}")
+    return str(match[0])
+
+
+def augment_track(track: pd.DataFrame, rocloud: pd.DataFrame, atcf: str, v_outer_ms: float = V_OUTER_MS) -> pd.DataFrame:
+    """Radios W06 PA21 (pa21_r2_km = R_W06, pa21_r34_km), R34 medio observado y ROCLOUD."""
+    track = add_parametric_radii(
+        track, use_observed_rmw=False, calibrate_to_r34=False, rmax_variant="pa21",
+        rmw_unit="km", r34_unit="nm", prefix="pa21_",
+        thresholds_ms={"r2_km": v_outer_ms, "r34_km": V_R34_MS},
+    )
+    track["r34_obs_nmi"] = track[R34_COLS].where(track[R34_COLS] > 0).mean(axis=1)
+    track["r34_obs_km"] = track["r34_obs_nmi"] * NAUTICAL_MILE_TO_KM
+    roc = rocloud.loc[rocloud["storm_id"] == atcf, ["time", "rocloud_mean_km"] + ROC_COLS]
+    return track.merge(roc, on="time", how="left")
+
+
+def load_track(case: str, cfg: CaseConfig | None = None) -> pd.DataFrame:
+    """Trayectoria sinóptica IBTrACS con R34, radios W06 PA21 y ROCLOUD."""
+    cfg = CaseConfig() if cfg is None else cfg
     c = CASES[case]
-    ibtracs = cfg.tracks_dir / f"IBTrACS.{c['basin']}.v04r01.nc"
-    rocloud = cfg.rocloud_dir / f"ROCLOUD_{c['basin']}.csv"
-    track = H.load_case_track(ibtracs, rocloud, c["name"], c["season"], c["atcf"])
+    dataset = read_ibtracs_dataset(cfg.tracks_dir / f"IBTrACS.{c['basin']}.v04r01.nc")
+    track = ibtracs_to_track_dataframe(dataset, find_ibtracs_sid(dataset, c["name"], c["season"]))
+    track = filter_synoptic_times(track).dropna(subset=["vmax_kt", "lat", "lon"]).reset_index(drop=True)
+    track = augment_track(track, read_rocloud_csv(cfg.rocloud_dir / f"ROCLOUD_{c['basin']}.csv"), c["atcf"])
     return track.dropna(subset=["lat", "lon", "vmax_kt"]).reset_index(drop=True)
 
 
@@ -213,18 +222,14 @@ def select_positions(track: pd.DataFrame, land_lat: np.ndarray, land_lon: np.nda
     return track[keep].reset_index(drop=True)
 
 
-# ============================================================================
-# LLUVIA Y PERCENTILES
-# ============================================================================
-
-
-def read_precip(times: pd.DatetimeIndex, cfg: ConfigV021 = ConfigV021()):
+def read_precip(times: pd.DatetimeIndex, cfg: CaseConfig | None = None):
     """
     P6, R24 y A72 en todos los tiempos de 6 h entre min(times) - pad y
     max(times) + pad (sin huecos), recortados a cfg.box.
     """
     from itchi.mswep import subset_mswep_domain
 
+    cfg = CaseConfig() if cfg is None else cfg
     t0 = times.min() - pd.Timedelta(hours=cfg.hp_pad_before_h)
     t1 = times.max() + pd.Timedelta(hours=cfg.hp_pad_after_h)
     years = sorted({t0.year, t1.year})
@@ -246,87 +251,20 @@ def read_precip(times: pd.DatetimeIndex, cfg: ConfigV021 = ConfigV021()):
     return tuple(da.sel(time=keep).transpose("time", "lat", "lon") for da in (p6, r24, a72))
 
 
-def read_climatologies(template: xr.DataArray, cfg: ConfigV021 = ConfigV021()) -> tuple[dict, dict, dict]:
+def read_climatologies(template: xr.DataArray, cfg: CaseConfig | None = None) -> tuple[dict, dict, dict]:
     """Percentiles de 6, 24 y 72 h en la malla de template."""
+    cfg = CaseConfig() if cfg is None else cfg
     return tuple(load_percentile_climatology(cfg.clim[d], variable=cfg.clim_var, template=template) for d in (6, 24, 72))
 
 
 def precipitation_hazard(p6, r24, a72, q6, q24, q72, spec: dict, nan_value: float | None = 0.0):
-    hp = compute_precipitation_hazard_from_spec(
+    hp = compute_precipitation_matrix_hazard(
         precipitation=p6, quantiles_6h=q6,
         escalation_values={"R24": r24, "A72": a72},
-        escalation_quantiles={"R24": q24, "A72": q72}, spec=spec)
+        escalation_quantiles={"R24": q24, "A72": q72}, matrix=spec)
     if nan_value is None:
         return hp
     return hp.fillna(nan_value) if isinstance(hp, xr.DataArray) else np.where(np.isfinite(hp), hp, nan_value)
-
-
-# ============================================================================
-# MUNICIPIOS
-# ============================================================================
-
-
-def load_municipalities(lat: np.ndarray, lon: np.ndarray, cfg: ConfigV021 = ConfigV021()):
-    """
-    Municipios cuyo punto representativo está en la malla y sus píxeles.
-    Devuelve (gdf, pix) con pix[CVEGEO] = (índices planos, n de centros dentro).
-    """
-    import geopandas as gpd
-
-    from itchi.declaratorias_6h import municipio_pixels
-
-    gdf = gpd.read_file(cfg.mun_shp)
-    gdf["CVEGEO"] = gdf["CVEGEO"].astype(str).str.zfill(5)
-    if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
-        gdf = gdf.to_crs(4326)
-    rp = gdf.geometry.representative_point()
-    sub = gdf[rp.x.between(lon.min(), lon.max()) & rp.y.between(lat.min(), lat.max())].reset_index(drop=True)
-    pix = municipio_pixels(sub, lat, lon, sub["CVEGEO"])
-    return sub, pix
-
-
-def land_mask(pix: dict, shape: tuple[int, int]) -> np.ndarray:
-    m = np.zeros(int(np.prod(shape)), bool)
-    for flat, _ in pix.values():
-        m[flat] = True
-    return m.reshape(shape)
-
-
-def municipal_values(field: np.ndarray, pix: dict, codes, stat: str = "max") -> np.ndarray:
-    """
-    (T, ny, nx) o (ny, nx) -> (municipios, T) o (municipios,): estadístico de
-    los píxeles de cada municipio. NaN cuenta como 0 (fuera de la región).
-    """
-    squeeze = field.ndim == 2
-    f = np.nan_to_num(np.asarray(field, dtype=float)[None] if squeeze else np.asarray(field, dtype=float))
-    flat = f.reshape(f.shape[0], -1)
-    flats = [pix[c][0] for c in codes]
-    if stat in ("max", "mean"):
-        sizes = np.array([len(x) for x in flats])
-        starts = np.concatenate([[0], np.cumsum(sizes)[:-1]])
-        sel = flat[:, np.concatenate(flats)]
-        if stat == "max":
-            out = np.maximum.reduceat(sel, starts, axis=1).T
-        else:
-            out = (np.add.reduceat(sel, starts, axis=1) / sizes).T
-    elif stat == "p90":
-        out = np.stack([np.percentile(flat[:, x], 90, axis=1) for x in flats])
-    else:
-        raise ValueError(f"stat desconocido: {stat!r}")
-    return out[:, 0] if squeeze else out
-
-
-def paint_municipal(values: np.ndarray, pix: dict, codes, shape: tuple[int, int]) -> np.ndarray:
-    """
-    Valor municipal pintado en la malla (cada píxel toma el valor de su
-    municipio). Los municipios con centros propios (n > 0) tienen prioridad
-    sobre los que tomaron el píxel más cercano (n = 0).
-    """
-    out = np.full(int(np.prod(shape)), np.nan)
-    order = sorted(range(len(codes)), key=lambda i: pix[codes[i]][1] > 0)   # n = 0 primero, se sobrescriben
-    for i in order:
-        out[pix[codes[i]][0]] = values[i]
-    return out.reshape(shape)
 
 
 def siat_class(x) -> np.ndarray:
@@ -334,22 +272,17 @@ def siat_class(x) -> np.ndarray:
     return np.asarray(classify_itchi_to_siat_levels(np.nan_to_num(np.asarray(x, dtype=float)))).astype(np.int8)
 
 
-# ============================================================================
-# CÁLCULO POR CASO
-# ============================================================================
-
-
 def compute_case_fields(track: pd.DataFrame, p6: xr.DataArray, r24: xr.DataArray, a72: xr.DataArray,
                         q6: dict, q24: dict, q72: dict, settings: dict[str, dict],
                         verbose: bool = True) -> xr.Dataset:
     """
     ITCHI de cada experimento en las posiciones de track (tiempos dentro de
-    p6) y H_P continuo de cada variante de lluvia en todos los tiempos de p6.
+    p6) y H_P continuo de cada experimento en todos los tiempos de p6.
 
     No lee archivos: track es la trayectoria aumentada (load_track +
     select_positions) y p6, r24, a72 son DataArrays (time, lat, lon).
     """
-    from itchi.pipeline import compute_itchi_snapshot_v02
+    from itchi.pipeline import compute_itchi_snapshot
 
     lat, lon = p6["lat"].values, p6["lon"].values
     lon2d, lat2d = np.meshgrid(lon, lat)
@@ -382,7 +315,7 @@ def compute_case_fields(track: pd.DataFrame, p6: xr.DataArray, r24: xr.DataArray
         )
         for e, tag in enumerate(tags):
             try:
-                res = compute_itchi_snapshot_v02(p6.values[j], r24.values[j], a72.values[j], **common, **settings[tag])
+                res = compute_itchi_snapshot(p6.values[j], r24.values[j], a72.values[j], **common, **settings[tag])
             except ValueError as exc:
                 warnings.warn(f"posición {row['time']}: {exc}; se omite", stacklevel=2)
                 ok[i] = False
@@ -402,13 +335,11 @@ def compute_case_fields(track: pd.DataFrame, p6: xr.DataArray, r24: xr.DataArray
         print()
 
     # H_P continuo (no depende de la posición del ciclón)
-    hp_cont = {}
-    for name, tag in PRECIP_VARIANTS.items():
-        if tag in settings:
-            hp = precipitation_hazard(p6.values, r24.values, a72.values, *q_np,
-                                      spec=settings[tag]["precip_matrix"],
-                                      nan_value=settings[tag]["precipitation_nan_value"])
-            hp_cont[name] = np.asarray(hp, np.float32)
+    hp_cont = np.stack([
+        np.asarray(precipitation_hazard(p6.values, r24.values, a72.values, *q_np,
+                                        spec=settings[tag]["precip_matrix"],
+                                        nan_value=settings[tag]["precipitation_nan_value"]), np.float32)
+        for tag in tags])
 
     keep = np.flatnonzero(ok)
     tr = track.iloc[keep].reset_index(drop=True)
@@ -425,8 +356,7 @@ def compute_case_fields(track: pd.DataFrame, p6: xr.DataArray, r24: xr.DataArray
         "track_vmax_kt": ("time", tr["vmax_kt"].to_numpy(float)),
         **{k: ("time", v[keep]) for k, v in meta.items()},
     }
-    for name, v in hp_cont.items():
-        data[f"H_P_cont_{name}"] = (("time_all", "lat", "lon"), v)
+    data["H_P_cont"] = (("exp", "time_all", "lat", "lon"), hp_cont)
     for k, v in zip((6, 24, 72), q_np, strict=True):
         for name, f in v.items():
             data[f"Q{k}h_{name}"] = (("lat", "lon"), np.asarray(f, np.float32))
@@ -435,29 +365,31 @@ def compute_case_fields(track: pd.DataFrame, p6: xr.DataArray, r24: xr.DataArray
     return ds
 
 
-def case_grid(season: int, cfg: ConfigV021 = ConfigV021()) -> tuple[np.ndarray, np.ndarray]:
+def case_grid(season: int, cfg: CaseConfig | None = None) -> tuple[np.ndarray, np.ndarray]:
     """lat y lon del recorte cfg.box en el archivo de 6 h de la temporada."""
     from itchi.mswep import subset_mswep_domain
 
+    cfg = CaseConfig() if cfg is None else cfg
     with xr.open_dataset(cfg.mswep_6h_dir / f"mswep_v3_6h_{season}.nc") as ds:
         p = subset_mswep_domain(ds["precipitation"].isel(time=0, drop=True), **cfg.box)
         return p["lat"].values.copy(), p["lon"].values.copy()
 
 
-def load_or_compute(case: str, cfg: ConfigV021 = ConfigV021(), force: bool = False, verbose: bool = True):
+def load_or_compute(case: str, cfg: CaseConfig | None = None, force: bool = False, verbose: bool = True):
     """
     Campos del caso (caché en cfg.cache_dir), trayectoria completa, municipios.
 
     Devuelve dict con: ds (xr.Dataset), track (todas las posiciones),
     gdf, pix, codes y land (máscara terrestre).
     """
+    cfg = CaseConfig() if cfg is None else cfg
     cfg.cache_dir.mkdir(parents=True, exist_ok=True)
     f = cfg.cache_dir / f"{case.lower()}.nc"
     track_all = load_track(case, cfg)
 
     # Malla del recorte: la del archivo de 6 h de la temporada (la misma de P6)
     lat, lon = case_grid(CASES[case]["season"], cfg)
-    gdf, pix = load_municipalities(lat, lon, cfg)
+    gdf, pix = load_municipalities(cfg.mun_shp, lat, lon)
     codes = list(pix)
 
     ds = None
@@ -478,7 +410,7 @@ def load_or_compute(case: str, cfg: ConfigV021 = ConfigV021(), force: bool = Fal
         q6, q24, q72 = read_climatologies(template, cfg)
         ds = compute_case_fields(track, p6, r24, a72, q6, q24, q72, experiment_settings(cfg), verbose)
         ds.attrs.update(case=case, municipal_stat=cfg.municipal_stat,
-                        experiments="; ".join(f"{k}: {v[0]} ({v[1]})" for k, v in EXPERIMENTS.items()))
+                        experiments="; ".join(f"{k}: {v or 'configs/default.yaml'}" for k, v in cfg.experiments.items()))
         ds.to_netcdf(f, encoding={v: {"zlib": True, "complevel": 2} for v in ds.data_vars})
         if verbose:
             print(f"  guardado {f} ({f.stat().st_size / 1e6:.0f} MB)")
@@ -487,11 +419,6 @@ def load_or_compute(case: str, cfg: ConfigV021 = ConfigV021(), force: bool = Fal
         warnings.warn("la malla del caché no coincide con la de los municipios; usa force=True", stacklevel=2)
     return dict(case=case, ds=ds, track=track_all, gdf=gdf, pix=pix, codes=codes,
                 land=land_mask(pix, (lat.size, lon.size)))
-
-
-# ============================================================================
-# RESÚMENES
-# ============================================================================
 
 
 def municipal_event(C: dict, field: str = "ITCHI", stat: str | None = None) -> xr.DataArray:
@@ -518,7 +445,7 @@ def class_counts(C: dict, tags=None) -> pd.DataFrame:
         cm = siat_class(mun.sel(exp=e).values)
         cp = siat_class(ds["ITCHI"].sel(exp=e).max("time").values)[C["land"]]
         for k in range(1, 6):
-            rows.append(dict(exp=label(e), clase=k, municipios=int((cm == k).sum()),
+            rows.append(dict(exp=e, clase=k, municipios=int((cm == k).sum()),
                              pixeles_tierra=int((cp == k).sum())))
     out = pd.DataFrame(rows).pivot_table(index="clase", columns="exp", values=["municipios", "pixeles_tierra"])
     return out
@@ -565,15 +492,17 @@ def lead_times(times, classes, t_event, levels=(2, 3, 4, 5), window_h: float | N
     return pd.DataFrame(rows)
 
 
-def peak_time(C: dict, tag: str = "v020") -> pd.Timestamp:
+def peak_time(C: dict, tag: str | None = None) -> pd.Timestamp:
     """Posición con mayor ITCHI acumulado sobre tierra (pico del evento sobre México)."""
     ds = C["ds"]
+    tag = str(ds["exp"].values[0]) if tag is None else tag
     total = (ds["ITCHI"].sel(exp=tag).values * C["land"][None]).reshape(ds.sizes["time"], -1).sum(axis=1)
     return pd.Timestamp(ds["time"].values[int(np.argmax(total))])
 
 
-def load_declaratorias(cfg: ConfigV021 = ConfigV021()) -> pd.DataFrame | None:
+def load_declaratorias(cfg: CaseConfig | None = None) -> pd.DataFrame | None:
     """Declaratorias asociadas a ciclones (scripts/declaratorias_6h.py); None si no existe el archivo."""
+    cfg = CaseConfig() if cfg is None else cfg
     if not cfg.decl_file.exists():
         warnings.warn(f"no existe {cfg.decl_file}: sin comparación con declaratorias", stacklevel=2)
         return None
@@ -611,55 +540,9 @@ def tabla_ordinal(C: dict, decl_codes, tags=None) -> pd.DataFrame:
         cls = siat_class(mun.sel(exp=e).values)
         for k in range(0, 6):
             m = in_region & (cls == k)
-            rows.append(dict(exp=label(e), clase=k, municipios=int(m.sum()), con_declaratoria=int((m & has_d).sum()),
+            rows.append(dict(exp=e, clase=k, municipios=int(m.sum()), con_declaratoria=int((m & has_d).sum()),
                              P_D=(m & has_d).sum() / m.sum() if m.sum() else np.nan))
     return pd.DataFrame(rows)
-
-
-def _norm_name(x) -> str:
-    """
-    Nombre comparable: repara el texto UTF-8 leído como latin-1 ("Ã\x81lvarez"),
-    quita acentos y deja solo letras, dígitos y espacios en minúsculas.
-    """
-    import unicodedata
-
-    t = str(x)
-    if "Ã" in t or "Â" in t:
-        try:
-            t = t.encode("latin-1").decode("utf-8")
-        except (UnicodeEncodeError, UnicodeDecodeError):
-            pass
-    t = "".join(ch for ch in unicodedata.normalize("NFKD", t) if not unicodedata.combining(ch)).lower()
-    return " ".join("".join(ch if ch.isalnum() else " " for ch in t).split())
-
-
-def find_municipio(gdf, nombre: str, cve_ent: str, cvegeo: str | None = None) -> str:
-    """
-    CVEGEO del municipio por nombre y clave de entidad. La comparación no
-    distingue acentos, mayúsculas ni puntuación y repara acentos mal
-    decodificados. Si el nombre no aparece y se da cvegeo, usa esa clave
-    (avisando con el NOMGEO del shapefile); si no, el error lista los
-    municipios de la entidad que comparten alguna palabra con el nombre.
-    """
-    codes = gdf["CVEGEO"].astype(str).str.zfill(5)
-    in_ent = codes.str[:2] == str(cve_ent).zfill(2)
-    names = gdf["NOMGEO"].map(_norm_name)
-    target = _norm_name(nombre)
-    hit = gdf[in_ent & (names == target)]
-    if len(hit) == 0:                                   # todas las palabras del nombre
-        words = set(target.split()) - {"de", "del", "la", "las", "los", "el"}
-        hit = gdf[in_ent & names.map(lambda n: words <= set(n.split()))]
-    if len(hit) == 1:
-        return str(hit["CVEGEO"].iloc[0]).zfill(5)
-    if len(hit) == 0 and cvegeo is not None and (codes == str(cvegeo).zfill(5)).any():
-        nom = gdf.loc[codes == str(cvegeo).zfill(5), "NOMGEO"].iloc[0]
-        warnings.warn(f"{nombre!r} no se encontró por nombre; se usa CVEGEO {cvegeo} (NOMGEO = {nom!r})", stacklevel=2)
-        return str(cvegeo).zfill(5)
-    first = target.split()[0] if target else ""
-    similar = sorted(gdf.loc[in_ent & names.str.contains(first, regex=False), "NOMGEO"].astype(str))[:15]
-    raise ValueError(f"{nombre} ({cve_ent}): {len(hit)} coincidencias. "
-                     f"Municipios de la entidad {cve_ent} con '{first}': {similar} "
-                     f"(municipios de la entidad en la malla: {int(in_ent.sum())})")
 
 
 def percentile_level(values: np.ndarray, quantiles: dict[str, np.ndarray | float]) -> np.ndarray:
@@ -669,20 +552,3 @@ def percentile_level(values: np.ndarray, quantiles: dict[str, np.ndarray | float
     for k in names:
         out = np.where(np.asarray(values) >= np.asarray(quantiles[k]), float(k[1:]), out)
     return out
-
-
-# ============================================================================
-# MAIN
-# ============================================================================
-
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Avance v0.2.1: ITCHI por caso en malla y por municipio")
-    ap.add_argument("--casos", nargs="+", default=list(CASES), choices=list(CASES))
-    ap.add_argument("--forzar", action="store_true", help="recalcula aunque exista el caché")
-    args = ap.parse_args()
-    cfg = ConfigV021()
-    for case in args.casos:
-        t0 = time.time()
-        C = load_or_compute(case, cfg, force=args.forzar)
-        print(class_counts(C).to_string())
-        print(f"{case}: {time.time() - t0:.0f} s\n")

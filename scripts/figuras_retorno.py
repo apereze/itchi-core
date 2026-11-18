@@ -1,5 +1,5 @@
 """
-ITCHI-CORE · Figuras de los periodos de retorno (notebooks/third test/10_periodos_retorno.ipynb)
+ITCHI-CORE · Figuras de los periodos de retorno (notebooks/v03/10_periodos_retorno.ipynb)
 
     fig_r1_curva_pixel     cómo se lee un periodo de retorno: máximos estacionales,
                            GEV y POT en ciudades de referencia

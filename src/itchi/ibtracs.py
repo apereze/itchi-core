@@ -2,7 +2,7 @@
 IBTrACS NetCDF adapter for ITCHI.
 
 This module converts IBTrACS-like NetCDF datasets into the internal ITCHI
-track-table contract used by ``snapshot_inputs.py`` and ``tracks.py``.
+track-table contract of ``tracks.py``.
 
 The adapter is intentionally configurable because IBTrACS exposes several
 agency-specific variables. The default configuration prioritizes common USA

@@ -32,8 +32,9 @@ Select all affected areas:
 - [ ] `components.py`
 - [ ] `index.py`
 - [ ] `pipeline.py`
-- [ ] `aggregation.py`
-- [ ] `compiler.py`
+- [ ] `parametric_radii.py`
+- [ ] `cases.py` / `municipal.py`
+- [ ] `return_periods.py`
 - [ ] `quality_control.py`
 - [ ] `io.py`
 - [ ] `tracks.py`
